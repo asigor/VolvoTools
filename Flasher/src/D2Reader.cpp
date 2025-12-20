@@ -19,6 +19,9 @@ namespace {
         }
         std::vector<PASSTHRU_MSG> received_msgs(1);
         channel.readMsgs(received_msgs, 3000);
+        if (received_msgs.empty()) {
+            throw std::runtime_error("Failed to receive message");
+        }
         return received_msgs[0];
     }
 
@@ -38,6 +41,11 @@ D2Reader::~D2Reader() { }
 size_t D2Reader::getMaximumFlashProgress() const
 {
     return _size;
+}
+
+bool D2Reader::isBootloaderRequired() const
+{
+    return false;
 }
 
 void D2Reader::eraseStep(j2534::J2534Channel&, uint8_t)

@@ -36,7 +36,7 @@ void D2FlasherBase::startImpl(std::vector<std::unique_ptr<j2534::J2534Channel>>&
         const auto ecuId{ getFlasherParameters().ecuId };
         const auto additionalData{ getFlasherParameters().additionalData };
         const auto bootloader = getFlasherParameters().sblProvider->getSBL(carPlatform, ecuId, additionalData);
-        if (bootloader.chunks.empty()) {
+        if (isBootloaderRequired() && bootloader.chunks.empty()) {
             throw std::runtime_error("Secondary bootloader not found");
         }
         std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -47,12 +47,14 @@ void D2FlasherBase::startImpl(std::vector<std::unique_ptr<j2534::J2534Channel>>&
         common::D2ProtocolCommonSteps::fallAsleep(channels);
         auto& channel{ common::getChannelByEcuId(carPlatform, ecuId, channels) };
         common::D2ProtocolCommonSteps::startPBL(channel, ecuId);
-        setCurrentState(FlasherState::LoadBootloader);
-        common::D2ProtocolCommonSteps::transferData(channel, ecuId, bootloader, [this](size_t progress) {
-            incCurrentProgress(progress);
-        });
-        setCurrentState(FlasherState::StartBootloader);
-        common::D2ProtocolCommonSteps::startRoutine(channel, ecuId, bootloader.header.call);
+        if (!bootloader.chunks.empty()) {
+            setCurrentState(FlasherState::LoadBootloader);
+            common::D2ProtocolCommonSteps::transferData(channel, ecuId, bootloader, [this](size_t progress) {
+                incCurrentProgress(progress);
+                });
+            setCurrentState(FlasherState::StartBootloader);
+            common::D2ProtocolCommonSteps::startRoutine(channel, ecuId, bootloader.header.call);
+        }
         setCurrentState(FlasherState::EraseFlash);
         eraseStep(channel, ecuId);
         setCurrentState(FlasherState::WriteFlash);

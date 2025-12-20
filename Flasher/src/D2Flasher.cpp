@@ -27,6 +27,11 @@ size_t D2Flasher::getMaximumFlashProgress() const
     return getProgressFromVBF(getFlasherParameters().flash);
 }
 
+bool D2Flasher::isBootloaderRequired() const
+{
+    return true;
+}
+
 void D2Flasher::eraseStep(j2534::J2534Channel &channel, uint8_t ecuId)
 {
     common::D2ProtocolCommonSteps::eraseFlash(channel, ecuId, getFlasherParameters().flash);
