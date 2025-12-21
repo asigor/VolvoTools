@@ -128,6 +128,8 @@ namespace common {
 				| (x3::lit("ecu_addr") >> '=' >> uint_literal[([](auto& ctx) {
 					x3::_val(ctx).ecuAddress = x3::_attr(ctx);
 					})] >> ';')
+				| (x3::lit("erase_parameter") >> '=' >> uint_literal[([]([[maybe_unused]]auto& ctx) {
+					})] >> ';')
 				| (x3::lit("frame_format") >> '=' >> unquoted_string[([](auto& ctx) {
 					x3::_val(ctx).frameFormat = parseFrameFormat(x3::_attr(ctx));
 					})] >> ';')
