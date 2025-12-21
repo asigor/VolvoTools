@@ -55,6 +55,8 @@ namespace common {
 				return SWPartType::DATA;
 			else if (lowered == "exe")
 				return SWPartType::EXE;
+			else if (lowered == "exe1")
+				return SWPartType::EXE;
 			else if (lowered == "sigcfg")
 				return SWPartType::SIGCFG;
 			return SWPartType::UNKNOWN;
@@ -64,18 +66,34 @@ namespace common {
 
 		x3::rule<class description, std::vector<std::string>> const description = "description";
 		x3::rule<class vbf_header, VBFHeader> const vbf_header = "vbf_header";
-		x3::rule<class erase, std::vector<std::pair<uint32_t, uint32_t>>> const erase = "erase";
+		x3::rule<class uint_rule, uint32_t> const uint_literal = "uint_literal";
+		x3::rule<class full_erase_block, EraseBlock> const full_erase_block = "full_erase_block";
+		x3::rule<class erase_block_list, std::vector<EraseBlock>> const erase_block_list = "erase_block_list";
 
 		auto const quoted_string = x3::lexeme['"' >> *(x3::char_ - '"' - x3::eol) >> '"'];
 		auto const unquoted_string = x3::lexeme[+(x3::char_ - ';' - x3::eol)];
 
-		auto const hex = x3::lit("0x") >> x3::hex;
+		auto const uint_literal_def = x3::lit("0x") >> x3::uint_parser<uint32_t, 16>{} | x3::uint_parser<uint32_t, 10>{};
 
 		auto const space_comment = x3::space | x3::lexeme["//" >> *(x3::char_ - x3::eol) >> x3::eol];
 
-		auto const erase_block = '{' >> hex >> ',' >> hex >> '}';
+		auto const on_erase_block = [](auto& ctx) {
+			auto const& t = x3::_attr(ctx);
+			uint32_t a = boost::fusion::at_c<0>(t);
+			uint32_t l = boost::fusion::at_c<1>(t);
+			x3::_val(ctx) = EraseBlock{a, l};
+			};
 
-		auto const erase_def = x3::lit("erase") >> '=' >> '{' >> (erase_block % ',') >> '}' >> ';';
+		auto const full_erase_block_def =
+			('{' >> uint_literal >> ',' >> uint_literal >> '}') [on_erase_block];
+
+		auto const erase_block_list_def = '{' >> -(full_erase_block % ',') >> '}';
+
+		auto const on_erase_list = [](auto& ctx) {
+			auto blocks = x3::_attr(ctx);
+			auto& hdr = x3::_val(ctx);
+			hdr.eraseBlocks.insert(hdr.eraseBlocks.end(), blocks.begin(), blocks.end());
+		};
 
 		auto const description_def = x3::lit("description") >> '=' >> '{' >> (quoted_string % ',') >> '}' >> ';';
 		auto const vbf_header_def = 
@@ -85,13 +103,16 @@ namespace common {
 			x3::lit("header") >> '{' >> *(description[([](auto& ctx) {
 					x3::_val(ctx).description = x3::_attr(ctx);
 				})]
-//				| erase[([](auto& ctx) { x3::_val(ctx).erase = x3::_attr(ctx); })]
 				| (x3::lit("sw_part_number") >> '=' >> quoted_string[([](auto& ctx) {
 					x3::_val(ctx).swPartNumber = x3::_attr(ctx);
 					})] >> ';')
 				| (x3::lit("sw_part_number") >> '=' >> unquoted_string[([](auto& ctx) {
 					x3::_val(ctx).swPartNumber = x3::_attr(ctx);
 					})] >> ';')
+				| (x3::lit("erase") >> '=' >> uint_literal[([](auto& ctx) {
+					x3::_val(ctx).eraseBlocks.push_back(EraseBlock(x3::_attr(ctx), 0));
+					})] >> ';')
+				| (x3::lit("erase") >> '=' >> erase_block_list[on_erase_list] >> ';')
 				| (x3::lit("sw_version") >> '=' >> unquoted_string[([](auto& ctx) {
 					x3::_val(ctx).swVersion = x3::_attr(ctx);
 					})] >> ';')
@@ -101,10 +122,10 @@ namespace common {
 				| (x3::lit("network") >> '=' >> unquoted_string[([](auto& ctx) {
 					x3::_val(ctx).network = parseNetworkType(x3::_attr(ctx));
 					})] >> ';')
-				| (x3::lit("ecu_address") >> '=' >> hex[([](auto& ctx) {
+				| (x3::lit("ecu_address") >> '=' >> uint_literal[([](auto& ctx) {
 					x3::_val(ctx).ecuAddress = x3::_attr(ctx);
 					})] >> ';')
-				| (x3::lit("ecu_addr") >> '=' >> hex[([](auto& ctx) {
+				| (x3::lit("ecu_addr") >> '=' >> uint_literal[([](auto& ctx) {
 					x3::_val(ctx).ecuAddress = x3::_attr(ctx);
 					})] >> ';')
 				| (x3::lit("frame_format") >> '=' >> unquoted_string[([](auto& ctx) {
@@ -113,20 +134,20 @@ namespace common {
 				| (x3::lit("can_frame_format") >> '=' >> unquoted_string[([](auto& ctx) {
 					x3::_val(ctx).frameFormat = parseFrameFormat(x3::_attr(ctx));
 					})] >> ';')
-				| (x3::lit("call") >> '=' >> hex[([](auto& ctx) {
+				| (x3::lit("call") >> '=' >> uint_literal[([](auto& ctx) {
 					x3::_val(ctx).call = x3::_attr(ctx);
 					})] >> ';')
-				| (x3::lit("jmp") >> '=' >> hex[([](auto& ctx) {
+				| (x3::lit("jmp") >> '=' >> uint_literal[([](auto& ctx) {
 					x3::_val(ctx).call = x3::_attr(ctx);
 					})] >> ';')
-				| (x3::lit("jsr") >> '=' >> hex[([](auto& ctx) {
+				| (x3::lit("jsr") >> '=' >> uint_literal[([](auto& ctx) {
 					x3::_val(ctx).call = x3::_attr(ctx);
 					})] >> ';')
-				| (x3::lit("file_checksum") >> '=' >> hex[([](auto& ctx) {
+				| (x3::lit("file_checksum") >> '=' >> uint_literal[([](auto& ctx) {
 					x3::_val(ctx).fileChecksum = x3::_attr(ctx);
 					})] >> ';')) >> '}';
 
-		BOOST_SPIRIT_DEFINE(description, vbf_header, erase);
+		BOOST_SPIRIT_DEFINE(description, vbf_header, uint_literal, full_erase_block, erase_block_list);
 
 		template<typename T>
 		T parseVBFHeader(T begin, T end, VBFHeader& data)

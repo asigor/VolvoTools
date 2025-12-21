@@ -25,6 +25,12 @@ namespace common {
 		SIGCFG
 	};
 
+	struct EraseBlock
+	{
+		uint32_t startAddr;
+		uint32_t length;
+	};
+
 	struct VBFHeader {
 		double vbfVersion{};
 		std::vector<std::string> description;
@@ -36,7 +42,7 @@ namespace common {
 		FrameFormat frameFormat{ FrameFormat::UNKNOWN };
 		uint32_t call{};
 		uint32_t fileChecksum{};
-		std::vector<std::pair<uint32_t, uint32_t>> erase;
+		std::vector<EraseBlock> eraseBlocks;
 	};
 
 } // namespace common
