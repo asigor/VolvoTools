@@ -11,6 +11,17 @@
 #include <iostream>
 #include <utility>
 
+BOOST_FUSION_ADAPT_STRUCT(common::EraseBlock,
+	(uint32_t, startAddr)
+	(uint32_t, length)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(common::ChecksumBlock,
+	(uint32_t, startAddr)
+	(uint32_t, endAddr)
+	(uint32_t, checksum)
+)
+
 namespace common {
 
 	namespace {
@@ -57,9 +68,47 @@ namespace common {
 				return SWPartType::EXE;
 			else if (lowered == "exe1")
 				return SWPartType::EXE;
+			else if (lowered == "exe2")
+				return SWPartType::EXE;
 			else if (lowered == "sigcfg")
 				return SWPartType::SIGCFG;
+			else if (lowered == "carcfg")
+				return SWPartType::CARCFG;
 			return SWPartType::UNKNOWN;
+		}
+
+		SessionType parseSessionType(const std::string& value)
+		{
+			const auto lowered = tolower(value);
+			if (lowered == "default")
+				return SessionType::DEFAULT;
+			else if (lowered == "programming")
+				return SessionType::PROGRAMMING;
+			else if (lowered == "extended")
+				return SessionType::EXTENDED;
+			else if (lowered == "safety_system")
+				return SessionType::SAFETY_SYSTEM;
+			return SessionType::OTHER;
+		}
+
+		FlashStrategy parseFlashStrategy(const std::string& value)
+		{
+			const auto lowered = tolower(value);
+			if (lowered == "inplace")
+				return FlashStrategy::INPLACE;
+			else if (lowered == "swap")
+				return FlashStrategy::SWAP;
+			else if (lowered == "dual_bank")
+				return FlashStrategy::DUAL_BANK;
+			else if (lowered == "tri_bank")
+				return FlashStrategy::TRI_BANK;
+			else if (lowered == "background")
+				return FlashStrategy::BACKGROUND;
+			else if (lowered == "sequential")
+				return FlashStrategy::SEQUENTIAL;
+			else if (lowered == "overlay")
+				return FlashStrategy::OVERLAY;
+			return FlashStrategy::UNKNOWN;
 		}
 
 		namespace x3 = boost::spirit::x3;
@@ -67,25 +116,24 @@ namespace common {
 		x3::rule<class description, std::vector<std::string>> const description = "description";
 		x3::rule<class vbf_header, VBFHeader> const vbf_header = "vbf_header";
 		x3::rule<class uint_rule, uint32_t> const uint_literal = "uint_literal";
+		x3::rule<class uint8_rule, uint8_t> const uint8_literal = "uint8_literal";
 		x3::rule<class full_erase_block, EraseBlock> const full_erase_block = "full_erase_block";
 		x3::rule<class erase_block_list, std::vector<EraseBlock>> const erase_block_list = "erase_block_list";
+		x3::rule<class checksum_block, ChecksumBlock> const checksum_block = "checksum_block";
+		x3::rule<class checksum_block_list, std::vector<ChecksumBlock>> const checksum_block_list = "checksum_block_list";
 
 		auto const quoted_string = x3::lexeme['"' >> *(x3::char_ - '"' - x3::eol) >> '"'];
 		auto const unquoted_string = x3::lexeme[+(x3::char_ - ';' - x3::eol)];
 
-		auto const uint_literal_def = x3::lit("0x") >> x3::uint_parser<uint32_t, 16>{} | x3::uint_parser<uint32_t, 10>{};
+		auto const uint_literal_def = x3::lit("0x") >> x3::uint_parser<uint32_t, 16>{}
+			| x3::uint_parser<uint32_t, 10>{};
+		auto const uint8_literal_def = x3::lit("0x") >> x3::uint_parser<uint8_t, 16>{}
+			| x3::uint_parser<uint8_t, 10>{};
 
 		auto const space_comment = x3::space | x3::lexeme["//" >> *(x3::char_ - x3::eol) >> x3::eol];
 
-		auto const on_erase_block = [](auto& ctx) {
-			auto const& t = x3::_attr(ctx);
-			uint32_t a = boost::fusion::at_c<0>(t);
-			uint32_t l = boost::fusion::at_c<1>(t);
-			x3::_val(ctx) = EraseBlock{a, l};
-			};
-
 		auto const full_erase_block_def =
-			('{' >> uint_literal >> ',' >> uint_literal >> '}') [on_erase_block];
+			('{' >> uint_literal >> ',' >> uint_literal >> '}');
 
 		auto const erase_block_list_def = '{' >> -(full_erase_block % ',') >> '}';
 
@@ -95,7 +143,19 @@ namespace common {
 			hdr.eraseBlocks.insert(hdr.eraseBlocks.end(), blocks.begin(), blocks.end());
 		};
 
+		auto const checksum_block_def =
+			('{' >> uint_literal >> ',' >> uint_literal >> ',' >> uint_literal >> '}');
+
+		auto const checksum_block_list_def = '{' >> -(checksum_block % ',') >> '}';
+
+		auto const on_checksum_list = [](auto& ctx) {
+			auto blocks = x3::_attr(ctx);
+			auto& hdr = x3::_val(ctx);
+			hdr.checksumTable.insert(hdr.checksumTable.end(), blocks.begin(), blocks.end());
+			};
+
 		auto const description_def = x3::lit("description") >> '=' >> '{' >> (quoted_string % ',') >> '}' >> ';';
+
 		auto const vbf_header_def = 
 			x3::lit("vbf_version") >> '=' >> x3::float_[([](auto& ctx) {
 			x3::_val(ctx).vbfVersion = x3::_attr(ctx);
@@ -133,8 +193,20 @@ namespace common {
 				| (x3::lit("frame_format") >> '=' >> unquoted_string[([](auto& ctx) {
 					x3::_val(ctx).frameFormat = parseFrameFormat(x3::_attr(ctx));
 					})] >> ';')
+				| (x3::lit("flash_strategy") >> '=' >> unquoted_string[([](auto& ctx) {
+					x3::_val(ctx).flashStrategy = parseFlashStrategy(x3::_attr(ctx));
+					})] >> ';')
+				| (x3::lit("session_type") >> '=' >> unquoted_string[([](auto& ctx) {
+					x3::_val(ctx).sessionType = parseSessionType(x3::_attr(ctx));
+					})] >> ';')
 				| (x3::lit("can_frame_format") >> '=' >> unquoted_string[([](auto& ctx) {
 					x3::_val(ctx).frameFormat = parseFrameFormat(x3::_attr(ctx));
+					})] >> ';')
+				| (x3::lit("signature") >> '=' >> quoted_string[([](auto& ctx) {
+					x3::_val(ctx).signature = x3::_attr(ctx);
+					})] >> ';')
+				| (x3::lit("certificate_identifier") >> '=' >> quoted_string[([](auto& ctx) {
+					x3::_val(ctx).certificateIdentifier = x3::_attr(ctx);
 					})] >> ';')
 				| (x3::lit("call") >> '=' >> uint_literal[([](auto& ctx) {
 					x3::_val(ctx).call = x3::_attr(ctx);
@@ -145,11 +217,17 @@ namespace common {
 				| (x3::lit("jsr") >> '=' >> uint_literal[([](auto& ctx) {
 					x3::_val(ctx).call = x3::_attr(ctx);
 					})] >> ';')
+				| (x3::lit("security_access_level") >> '=' >> uint8_literal[([](auto& ctx) {
+					x3::_val(ctx).securityAccessLevel = x3::_attr(ctx);
+					})] >> ';')
+				| (x3::lit("checksum_table") >> '=' >> checksum_block_list[on_checksum_list] >> ';')
 				| (x3::lit("file_checksum") >> '=' >> uint_literal[([](auto& ctx) {
 					x3::_val(ctx).fileChecksum = x3::_attr(ctx);
 					})] >> ';')) >> '}';
 
-		BOOST_SPIRIT_DEFINE(description, vbf_header, uint_literal, full_erase_block, erase_block_list);
+		BOOST_SPIRIT_DEFINE(description, vbf_header, uint_literal, uint8_literal,
+							full_erase_block, erase_block_list,
+							checksum_block, checksum_block_list);
 
 		template<typename T>
 		T parseVBFHeader(T begin, T end, VBFHeader& data)

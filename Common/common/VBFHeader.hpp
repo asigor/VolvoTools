@@ -22,13 +22,40 @@ namespace common {
 		SBL,
 		DATA,
 		EXE,
-		SIGCFG
+		SIGCFG,
+		CARCFG
+	};
+
+	enum class SessionType {
+		DEFAULT,
+		PROGRAMMING,
+		EXTENDED,
+		SAFETY_SYSTEM,
+		OTHER
+	};
+
+	enum class FlashStrategy {
+		INPLACE,
+		SWAP,
+		DUAL_BANK,
+		BACKGROUND,
+		TRI_BANK,
+		SEQUENTIAL,
+		OVERLAY,
+		UNKNOWN
 	};
 
 	struct EraseBlock
 	{
 		uint32_t startAddr;
 		uint32_t length;
+	};
+
+	struct ChecksumBlock
+	{
+		uint32_t startAddr;
+		uint32_t endAddr;
+		uint32_t checksum;
 	};
 
 	struct VBFHeader {
@@ -43,6 +70,12 @@ namespace common {
 		uint32_t call{};
 		uint32_t fileChecksum{};
 		std::vector<EraseBlock> eraseBlocks;
+		std::vector<ChecksumBlock> checksumTable;
+		FlashStrategy flashStrategy{ FlashStrategy::INPLACE };
+		SessionType sessionType{ SessionType::PROGRAMMING };
+		uint8_t securityAccessLevel{ 0x27 };
+		std::string signature;
+		std::string certificateIdentifier;
 	};
 
 } // namespace common
