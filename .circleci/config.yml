@@ -1,0 +1,103 @@
+version: 2.1
+
+orbs:
+  win: circleci/windows@5.0
+
+jobs:
+  build-x86:
+    executor:
+      name: win/server-2022
+      shell: powershell.exe
+    steps:
+      - checkout
+      - run:
+          name: Initialize submodules
+          command: git submodule update --init
+      - run:
+          name: Install Conan and detect profile
+          command: |
+            pip install conan
+            conan profile detect --force
+      - run:
+          name: Install dependencies (x86)
+          command: conan install . --build=missing --profile=default -s arch=x86 -s compiler.cppstd=17
+      - run:
+          name: Configure CMake (x86)
+          command: cmake --preset conan-default -A Win32
+      - run:
+          name: Build project (x86)
+          command: |
+            cd build
+            cmake --build . --config Release --parallel 4
+      - run:
+          name: Rename binaries with architecture, date, and commit hash
+          command: |
+            $date = Get-Date -Format "ddMMyy"
+            $shortCommit = $env:CIRCLE_SHA1.Substring(0, 7)
+            $binaries = Get-ChildItem -Path build -Filter "*.exe" -Recurse
+            foreach ($binary in $binaries) {
+              $name = [System.IO.Path]::GetFileNameWithoutExtension($binary.FullName)
+              $ext = [System.IO.Path]::GetExtension($binary.FullName)
+              $newName = "${name}_x86_${date}_${shortCommit}${ext}"
+              Rename-Item -Path $binary.FullName -NewName $newName
+            }
+      - store_artifacts:
+          path: build
+          destination: VolvoTools_Build_x86
+
+  build-x64:
+    executor:
+      name: win/server-2022
+      shell: powershell.exe
+    steps:
+      - checkout
+      - run:
+          name: Initialize submodules
+          command: git submodule update --init
+      - run:
+          name: Install Conan and detect profile
+          command: |
+            pip install conan
+            conan profile detect --force
+      - run:
+          name: Install dependencies (x64)
+          command: conan install . --build=missing --profile=default -s compiler.cppstd=17
+      - run:
+          name: Configure CMake (x64)
+          command: cmake --preset conan-default -A x64
+      - run:
+          name: Build project (x64)
+          command: |
+            cd build
+            cmake --build . --config Release --parallel 4
+      - run:
+          name: Rename binaries with architecture, date, and commit hash
+          command: |
+            $date = Get-Date -Format "ddMMyy"
+            $shortCommit = $env:CIRCLE_SHA1.Substring(0, 7)
+            $binaries = Get-ChildItem -Path build -Filter "*.exe" -Recurse
+            foreach ($binary in $binaries) {
+              $name = [System.IO.Path]::GetFileNameWithoutExtension($binary.FullName)
+              $ext = [System.IO.Path]::GetExtension($binary.FullName)
+              $newName = "${name}_x64_${date}_${shortCommit}${ext}"
+              Rename-Item -Path $binary.FullName -NewName $newName
+            }
+      - store_artifacts:
+          path: build
+          destination: VolvoTools_Build_x64
+
+workflows:
+  build:
+    jobs:
+      - build-x86:
+          filters:
+            branches:
+              only: master
+            tags:
+              only: /.*/
+      - build-x64:
+          filters:
+            branches:
+              only: master
+            tags:
+              only: /.*/
