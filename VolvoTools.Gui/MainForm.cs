@@ -40,8 +40,6 @@ namespace VolvoToolsGui
         private readonly TextBox _flashInput;
         private readonly TextBox _flashSbl;
         private readonly TextBox _readOutput;
-        private readonly TextBox _readStart;
-        private readonly TextBox _readSize;
         private readonly ProgressBar _progress;
         private readonly Button _clearLog;
 
@@ -141,8 +139,8 @@ namespace VolvoToolsGui
             _flashInput = new TextBox { Dock = DockStyle.Fill };
             _flashSbl = new TextBox { Dock = DockStyle.Fill };
             _readOutput = new TextBox { Dock = DockStyle.Fill };
-            _readStart = new TextBox { Dock = DockStyle.Fill, Text = "0" };
-            _readSize = new TextBox { Dock = DockStyle.Fill, Text = "0" };
+            _deviceList.Text = "Auto";
+            _driverLabel.Text = "Driver: auto";
 
             BuildFlasherTab(flasherTab);
 
@@ -181,7 +179,7 @@ namespace VolvoToolsGui
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 4,
-                RowCount = 7
+                RowCount = 5
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -207,18 +205,13 @@ namespace VolvoToolsGui
             pickRead.Click += (_, _) => PickSaveFile(_readOutput, "BIN files|*.bin|All files|*.*");
             layout.Controls.Add(pickRead, 2, 2);
 
-            layout.Controls.Add(new Label { Text = "Read start (hex)", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 0, 3);
-            layout.Controls.Add(_readStart, 1, 3);
-            layout.Controls.Add(new Label { Text = "Read size (hex)", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 2, 3);
-            layout.Controls.Add(_readSize, 3, 3);
-
             var hints = new Label
             {
-                Text = "Inputs are hex without 0x prefix. Use Module=CEM when needed.",
+                Text = "Inputs are hex without 0x prefix.",
                 Dock = DockStyle.Fill,
                 ForeColor = System.Drawing.Color.DimGray
             };
-            layout.Controls.Add(hints, 0, 4);
+            layout.Controls.Add(hints, 0, 3);
             layout.SetColumnSpan(hints, 4);
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
@@ -237,7 +230,7 @@ namespace VolvoToolsGui
             buttons.Controls.Add(pinBtn);
             buttons.Controls.Add(wakeBtn);
 
-            layout.Controls.Add(buttons, 0, 5);
+            layout.Controls.Add(buttons, 0, 4);
             layout.SetColumnSpan(buttons, 4);
         }
 
@@ -330,14 +323,6 @@ namespace VolvoToolsGui
                     }
                     args.Add("read");
                     args.AddRange(new[] { "-o", Quote(_readOutput.Text) });
-                    if (!string.IsNullOrWhiteSpace(_readStart.Text))
-                    {
-                        args.AddRange(new[] { "-s", _readStart.Text });
-                    }
-                    if (!string.IsNullOrWhiteSpace(_readSize.Text))
-                    {
-                        args.AddRange(new[] { "-sz", _readSize.Text });
-                    }
                     break;
                 case "pin":
                     args.Add("pin");
@@ -582,7 +567,7 @@ namespace VolvoToolsGui
 
             var typed = _deviceList.Text.Trim();
             var match = _devices.FirstOrDefault(d => d.Name.Equals(typed, StringComparison.OrdinalIgnoreCase));
-            _driverLabel.Text = match != null ? $"Driver: {match.Library}" : "Driver: -";
+            _driverLabel.Text = match != null ? $"Driver: {match.Library}" : "Driver: auto";
         }
 
         private async Task<string?> RunProcessCaptureAsync(string exePath, string arguments)
