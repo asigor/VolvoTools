@@ -35,6 +35,43 @@ namespace common {
         return converter.to_bytes(str);
     }
 
+    std::string toString(CarPlatform carPlatform)
+    {
+        switch (carPlatform) {
+        case CarPlatform::P80:
+            return "P80";
+        case CarPlatform::P1:
+            return "P1";
+        case CarPlatform::P1_UDS:
+            return "P1_UDS";
+        case CarPlatform::P2:
+            return "P2";
+        case CarPlatform::P2_250:
+            return "P2_250";
+        case CarPlatform::P2_UDS:
+            return "P2_UDS";
+        case CarPlatform::P3:
+            return "P3";
+        case CarPlatform::SPA:
+            return "SPA";
+        case CarPlatform::Ford_KWP:
+            return "FORD_KWP";
+        case CarPlatform::Ford_UDS:
+            return "FORD_UDS";
+        case CarPlatform::Haval_UDS:
+            return "HAVAL_UDS";
+        case CarPlatform::VAG:
+            return "VAG";
+        case CarPlatform::VAG_MED91:
+            return "VAG_MED91";
+        case CarPlatform::VAG_MED912:
+            return "VAG_MED912";
+        case CarPlatform::Undefined:
+        default:
+            return "UNDEFINED";
+        }
+    }
+
     uint32_t encodeBigEndian(uint8_t byte1, uint8_t byte2, uint8_t byte3, uint8_t byte4) {
         return byte1 + (byte2 << 8) + (byte3 << 16) + (byte4 << 24);
     }

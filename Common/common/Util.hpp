@@ -18,6 +18,7 @@ namespace common {
 
     std::wstring toWstring(const std::string& str);
     std::string toString(const std::wstring& str);
+    std::string toString(CarPlatform carPlatform);
 
     uint32_t encodeBigEndian(uint8_t byte1, uint8_t byte2 = 0, uint8_t byte3 = 0,
         uint8_t byte4 = 0);
