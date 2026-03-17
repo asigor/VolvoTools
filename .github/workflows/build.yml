@@ -32,7 +32,8 @@ jobs:
 
       - name: Install Conan and detect profile
         run: |
-          pip install conan
+          python -m pip install --upgrade pip
+          python -m pip install conan numpy
           conan profile detect --force
 
       - name: Install NSIS
@@ -53,7 +54,14 @@ jobs:
         run: |
           cpack --config build/CPackConfig.cmake -C Release -G NSIS
           New-Item -ItemType Directory -Path installers/${{ matrix.arch }} -Force | Out-Null
-          Get-ChildItem -Path build -Filter "VolvoTools-*.exe" | Copy-Item -Destination installers/${{ matrix.arch }}
+          $pkg = Get-ChildItem -Path ${{ github.workspace }} -Filter "VolvoTools-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $pkg) {
+            $pkg = Get-ChildItem -Path build -Filter "VolvoTools-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          }
+          if (-not $pkg) {
+            throw "No installer exe produced by cpack."
+          }
+          Copy-Item -Path $pkg.FullName -Destination installers/${{ matrix.arch }}
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
