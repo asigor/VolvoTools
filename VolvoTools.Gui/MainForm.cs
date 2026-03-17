@@ -18,12 +18,15 @@ namespace VolvoToolsGui
         private readonly TextBox _ecuId;
         private readonly TextBox _pin;
         private readonly CheckBox _pinDown;
+        private readonly ComboBox _targetModule;
 
         private readonly TextBox _flashInput;
         private readonly TextBox _flashSbl;
         private readonly TextBox _readOutput;
         private readonly TextBox _readStart;
         private readonly TextBox _readSize;
+        private readonly ProgressBar _progress;
+        private readonly Button _clearLog;
 
         private readonly TextBox _loggerVars;
         private readonly TextBox _loggerOutput;
@@ -58,7 +61,7 @@ namespace VolvoToolsGui
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 4,
-                RowCount = 3
+                RowCount = 4
             };
             connLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
             connLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -72,6 +75,9 @@ namespace VolvoToolsGui
             _ecuId = new TextBox { Dock = DockStyle.Fill, Text = "7A" };
             _pin = new TextBox { Dock = DockStyle.Fill, Text = "0" };
             _pinDown = new CheckBox { Text = "Scan down (PIN)", Dock = DockStyle.Left };
+            _targetModule = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+            _targetModule.Items.AddRange(new object[] { "ECU", "CEM" });
+            _targetModule.SelectedIndex = 0;
 
             _platform.Items.AddRange(new object[] { "P80", "P1", "P1_UDS", "P2", "P2_250", "P2_UDS", "P3", "SPA" });
             _platform.SelectedIndex = 3; // P2
@@ -90,7 +96,10 @@ namespace VolvoToolsGui
 
             connLayout.Controls.Add(new Label { Text = "PIN (hex)", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 0, 2);
             connLayout.Controls.Add(_pin, 1, 2);
-            connLayout.Controls.Add(_pinDown, 2, 2);
+            connLayout.Controls.Add(new Label { Text = "Module", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 2, 2);
+            connLayout.Controls.Add(_targetModule, 3, 2);
+            connLayout.Controls.Add(_pinDown, 1, 3);
+            connLayout.SetColumnSpan(_pinDown, 3);
 
             var tabs = new TabControl { Dock = DockStyle.Fill };
             main.Controls.Add(tabs, 0, 1);
@@ -122,8 +131,16 @@ namespace VolvoToolsGui
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical
             };
+            _clearLog = new Button { Text = "Clear", Dock = DockStyle.Right, Width = 80 };
+            _clearLog.Click += (_, _) => _logBox.Clear();
+            _progress = new ProgressBar { Dock = DockStyle.Bottom, Style = ProgressBarStyle.Marquee, Visible = false };
+
             var logGroup = new GroupBox { Text = "Output", Dock = DockStyle.Fill };
-            logGroup.Controls.Add(_logBox);
+            var logPanel = new Panel { Dock = DockStyle.Fill };
+            logPanel.Controls.Add(_logBox);
+            logPanel.Controls.Add(_progress);
+            logPanel.Controls.Add(_clearLog);
+            logGroup.Controls.Add(logPanel);
             main.Controls.Add(logGroup, 0, 2);
         }
 
@@ -133,7 +150,7 @@ namespace VolvoToolsGui
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 4,
-                RowCount = 6
+                RowCount = 7
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -164,6 +181,15 @@ namespace VolvoToolsGui
             layout.Controls.Add(new Label { Text = "Read size (hex)", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 2, 3);
             layout.Controls.Add(_readSize, 3, 3);
 
+            var hints = new Label
+            {
+                Text = "Inputs are hex without 0x prefix. Use Module=CEM when needed.",
+                Dock = DockStyle.Fill,
+                ForeColor = System.Drawing.Color.DimGray
+            };
+            layout.Controls.Add(hints, 0, 4);
+            layout.SetColumnSpan(hints, 4);
+
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
             var flashBtn = new Button { Text = "Flash", Width = 100 };
             var readBtn = new Button { Text = "Read", Width = 100 };
@@ -180,7 +206,7 @@ namespace VolvoToolsGui
             buttons.Controls.Add(pinBtn);
             buttons.Controls.Add(wakeBtn);
 
-            layout.Controls.Add(buttons, 0, 4);
+            layout.Controls.Add(buttons, 0, 5);
             layout.SetColumnSpan(buttons, 4);
         }
 
@@ -236,8 +262,19 @@ namespace VolvoToolsGui
                 return;
             }
 
+            if (!TryGetHexByte(_ecuId.Text, out var ecuId))
+            {
+                AppendLog("ECU ID must be a hex byte (00-FF).");
+                return;
+            }
+            if (!TryGetHexUInt64(_pin.Text, out var pin))
+            {
+                AppendLog("PIN must be hex.");
+                return;
+            }
+
             var args = new List<string>();
-            AppendCommonArgs(args, _ecuId.Text, _pin.Text);
+            AppendCommonArgs(args, ecuId, pin);
 
             switch (mode)
             {
@@ -307,13 +344,20 @@ namespace VolvoToolsGui
                 return;
             }
 
+            if (!TryGetHexByte(_loggerEcuId.Text, out var ecuId))
+            {
+                AppendLog("Logger ECU ID must be a hex byte (00-FF).");
+                return;
+            }
+
             var args = new List<string>();
-            AppendCommonArgs(args, _loggerEcuId.Text, "0");
+            AppendCommonArgs(args, ecuId, 0);
             args.AddRange(new[] { "-v", Quote(_loggerVars.Text) });
             args.AddRange(new[] { "-o", Quote(_loggerOutput.Text) });
             args.AddRange(new[] { "-p", _loggerPrintCount.Value.ToString(CultureInfo.InvariantCulture) });
 
             _loggerProcess = await RunProcessAsync(exe, string.Join(' ', args), keepProcess: true);
+            SetBusy(_loggerProcess != null && !_loggerProcess.HasExited);
         }
 
         private void StopLogger()
@@ -328,6 +372,7 @@ namespace VolvoToolsGui
             {
                 _loggerProcess.Kill(true);
                 AppendLog("Logger stopped.");
+                SetBusy(false);
             }
             catch (Exception ex)
             {
@@ -335,7 +380,7 @@ namespace VolvoToolsGui
             }
         }
 
-        private void AppendCommonArgs(List<string> args, string ecuText, string pinText)
+        private void AppendCommonArgs(List<string> args, int ecuId, ulong pin)
         {
             if (!string.IsNullOrWhiteSpace(_deviceFilter.Text))
             {
@@ -344,16 +389,10 @@ namespace VolvoToolsGui
 
             args.AddRange(new[] { "-b", _baudrate.SelectedItem!.ToString()! });
             args.AddRange(new[] { "-f", _platform.SelectedItem!.ToString()! });
+            args.AddRange(new[] { "-m", _targetModule.SelectedItem!.ToString()! });
 
-            if (!string.IsNullOrWhiteSpace(ecuText))
-            {
-                args.AddRange(new[] { "-e", ecuText });
-            }
-
-            if (!string.IsNullOrWhiteSpace(pinText))
-            {
-                args.AddRange(new[] { "-p", pinText });
-            }
+            args.AddRange(new[] { "-e", ecuId.ToString("X2") });
+            args.AddRange(new[] { "-p", pin.ToString("X") });
         }
 
         private static string Quote(string value)
@@ -371,6 +410,7 @@ namespace VolvoToolsGui
         private async Task<Process?> RunProcessAsync(string exePath, string arguments, bool keepProcess = false)
         {
             AppendLog($"> {Path.GetFileName(exePath)} {arguments}");
+            SetBusy(true);
 
             var startInfo = new ProcessStartInfo
             {
@@ -406,9 +446,16 @@ namespace VolvoToolsGui
 
             if (!keepProcess)
             {
-                await Task.Run(() => process.WaitForExit());
-                AppendLog($"Process exited with code {process.ExitCode}.");
-                process.Dispose();
+                try
+                {
+                    await Task.Run(() => process.WaitForExit());
+                    AppendLog($"Process exited with code {process.ExitCode}.");
+                }
+                finally
+                {
+                    process.Dispose();
+                    SetBusy(false);
+                }
                 return null;
             }
 
@@ -423,6 +470,26 @@ namespace VolvoToolsGui
                 return;
             }
             _logBox.AppendText(message + Environment.NewLine);
+        }
+
+        private void SetBusy(bool busy)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action<bool>(SetBusy), busy);
+                return;
+            }
+            _progress.Visible = busy;
+        }
+
+        private static bool TryGetHexByte(string text, out int value)
+        {
+            return int.TryParse(text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value) && value >= 0 && value <= 0xFF;
+        }
+
+        private static bool TryGetHexUInt64(string text, out ulong value)
+        {
+            return ulong.TryParse(text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value);
         }
 
         private static void PickFile(TextBox target, string filter)
