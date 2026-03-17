@@ -17,6 +17,36 @@ Big thanks to rkam for the information and shared data.
 Big thanks to jazdw for TP20 protocol explanation.
 Big thanks to maZer.GTi for motivation.
 
+## VolvoFlasher CLI profile (ECU/CEM)
+
+`VolvoFlasher` has a Volvo-themed startup header and now supports selecting target module type:
+
+- `--module ECU` (default)
+- `--module CEM`
+
+Example for P3 CEM workstream:
+
+```bash
+VolvoFlasher -f P3 -m CEM -e 0x42 flash -i your_file.bin
+```
+
+Example for classic ECU flashing on P2:
+
+```bash
+VolvoFlasher -f P2 -m ECU -e 0x7A flash -i your_file.bin
+```
+
+
+## Installer EXE (x86/x64)
+
+The CI pipeline now generates Windows installers (`.exe`) for both architectures:
+
+- `VolvoTools_Installer_x86`
+- `VolvoTools_Installer_x64`
+
+Installers are produced with CPack/NSIS and published as workflow artifacts.
+For tag builds, both installers are attached to the GitHub Release.
+
 ## Сборка проекта
 ### Требуемые приложения
 Для работы с системой контроля версий нужно установить `git`. 
@@ -60,4 +90,3 @@ Big thanks to maZer.GTi for motivation.
 
 
 ## Тут нужно описать тонкости VAG TP20 с которыми столкнулся в рамках его реализации
-

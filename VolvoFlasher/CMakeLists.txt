@@ -28,3 +28,8 @@ if (WIN32)
     )   
 endif()
 target_link_libraries(${PROJECT_NAME} Common j2534 Flasher argparse easyloggingpp::easyloggingpp)
+
+
+install(TARGETS ${PROJECT_NAME}
+    RUNTIME DESTINATION .
+)

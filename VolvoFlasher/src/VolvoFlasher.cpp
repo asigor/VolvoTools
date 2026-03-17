@@ -29,6 +29,7 @@
 #include <easylogging++.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -52,14 +53,53 @@ enum class RunMode
 	Test
 };
 
+enum class TargetModule
+{
+	ECU,
+	CEM
+};
+
+TargetModule parseTargetModule(const std::string& moduleName) {
+	std::string normalized = moduleName;
+	std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
+		return static_cast<char>(std::toupper(ch));
+	});
+	if (normalized == "ECU") {
+		return TargetModule::ECU;
+	}
+	if (normalized == "CEM") {
+		return TargetModule::CEM;
+	}
+	throw std::runtime_error("Unsupported module type. Allowed values: ECU, CEM");
+}
+
+std::string toString(TargetModule module) {
+	if (module == TargetModule::CEM) {
+		return "CEM";
+	}
+	return "ECU";
+}
+
+void printVolvoStyleHeader(TargetModule module, common::CarPlatform platform, uint8_t ecuId) {
+	std::cout << "\n"
+		<< "===============================================\n"
+		<< "          VOLVO TOOLS FLASH CONSOLE            \n"
+		<< "===============================================\n"
+		<< " Module   : " << toString(module) << "\n"
+		<< " Platform : " << common::toString(platform) << "\n"
+		<< " Node ID  : 0x" << std::hex << std::uppercase << static_cast<int>(ecuId) << std::dec << "\n"
+		<< "-----------------------------------------------\n";
+}
+
 bool getRunOptions(int argc, const char* argv[], std::string& deviceName,
 	unsigned long& baudrate, std::string& flashPath, uint64_t& pin,
 	uint8_t& ecuId, unsigned long& start, unsigned long& datasize,
-	RunMode& runMode, std::string& sblPath, common::CarPlatform& carPlatform, bool& pinUpward) {
+	RunMode& runMode, std::string& sblPath, common::CarPlatform& carPlatform, bool& pinUpward, TargetModule& module) {
 	argparse::ArgumentParser program("VolvoFlasher", "1.0", argparse::default_arguments::help);
 	program.add_argument("-d", "--device").default_value(std::string{}).help("Device name");
 	program.add_argument("-b", "--baudrate").scan<'u', unsigned long>().default_value(500000u).help("CAN bus speed");
 	program.add_argument("-f", "--platform").default_value(std::string{ "P2" }).help("Car's platform, supported values: P80, P1, P1_UDS, P2, P2_250, P2_UDS, P3, SPA");
+	program.add_argument("-m", "--module").default_value(std::string{ "ECU" }).help("Target module type. Supported values: ECU, CEM");
 	program.add_argument("-e", "--ecu").scan<'x', uint8_t>().default_value(0x7A).help("ECU id");
 	program.add_argument("-p", "--pin").scan<'x', uint64_t>().default_value(static_cast<uint64_t>(0)).help("PIN to unlock ECU");
 
@@ -120,6 +160,7 @@ bool getRunOptions(int argc, const char* argv[], std::string& deviceName,
 		baudrate = program.get<unsigned>("-b");
 		ecuId = program.get<uint8_t>("-e");
 		carPlatform = common::parseCarPlatform(program.get<std::string>("-f"));
+		module = parseTargetModule(program.get<std::string>("-m"));
 		pin = program.get<uint64_t>("-p");
 		return true;
 	}
@@ -935,8 +976,13 @@ int main(int argc, const char* argv[]) {
 	uint8_t ecuId = 0;
 	RunMode runMode = RunMode::None;
 	bool scanPinsUpward = true;
+	TargetModule module = TargetModule::ECU;
 	const auto devices = common::getAvailableDevices();
-	if (getRunOptions(argc, argv, deviceName, baudrate, flashPath, pin, ecuId, start, datasize, runMode, sblPath, carPlatform, scanPinsUpward)) {
+	if (getRunOptions(argc, argv, deviceName, baudrate, flashPath, pin, ecuId, start, datasize, runMode, sblPath, carPlatform, scanPinsUpward, module)) {
+		printVolvoStyleHeader(module, carPlatform, ecuId);
+		if (module == TargetModule::CEM) {
+			std::cout << "[Info] CEM mode selected. Ensure selected node ID belongs to CEM for your platform." << std::endl;
+		}
 		for (const auto& device : devices) {
 			if (deviceName.empty() ||
 				device.deviceName.find(deviceName) != std::string::npos) {
