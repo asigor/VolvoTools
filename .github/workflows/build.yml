@@ -39,6 +39,11 @@ jobs:
       - name: Install NSIS
         run: choco install nsis -y
 
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
       - name: Install dependencies
         run: |
           conan install . --build=missing --profile=default -s arch=${{ matrix.conan_arch }} -s compiler.cppstd=17

@@ -16,6 +16,27 @@ add_subdirectory (VolvoLogger)
 
 include(InstallRequiredSystemLibraries)
 
+if (WIN32)
+    if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(GUI_RID "win-x64")
+    else()
+        set(GUI_RID "win-x86")
+    endif()
+
+    add_custom_target(VolvoToolsGui ALL
+        COMMAND dotnet publish "${CMAKE_SOURCE_DIR}/VolvoTools.Gui/VolvoTools.Gui.csproj"
+            -c Release -r ${GUI_RID} --self-contained true
+            /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true
+            -o "${CMAKE_BINARY_DIR}/gui"
+        BYPRODUCTS "${CMAKE_BINARY_DIR}/gui/VolvoToolsGui.exe"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    install(FILES "${CMAKE_BINARY_DIR}/gui/VolvoToolsGui.exe"
+        DESTINATION .
+    )
+endif()
+
 set(CPACK_PACKAGE_VENDOR "VolvoTools")
 set(CPACK_PACKAGE_CONTACT "prometey1982")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Volvo ECU/CEM flashing and logging utilities")
@@ -45,6 +66,7 @@ endif()
 set(CPACK_PACKAGE_EXECUTABLES
     "VolvoFlasher" "Volvo Flasher"
     "VolvoLogger" "Volvo Logger"
+    "VolvoToolsGui" "Volvo Tools"
 )
 
 include(CPack)
