@@ -12,7 +12,24 @@ namespace VolvoToolsGui
 {
     public sealed class MainForm : Form
     {
-        private readonly TextBox _deviceFilter;
+        private sealed class DeviceItem
+        {
+            public DeviceItem(string name, string library)
+            {
+                Name = name;
+                Library = library;
+            }
+
+            public string Name { get; }
+            public string Library { get; }
+
+            public override string ToString() => Name;
+        }
+
+        private readonly ComboBox _deviceList;
+        private readonly Button _refreshDevices;
+        private readonly Button _connectDevice;
+        private readonly Label _driverLabel;
         private readonly ComboBox _platform;
         private readonly ComboBox _baudrate;
         private readonly TextBox _ecuId;
@@ -35,6 +52,7 @@ namespace VolvoToolsGui
 
         private readonly TextBox _logBox;
         private Process? _loggerProcess;
+        private readonly List<DeviceItem> _devices = new();
 
         public MainForm()
         {
@@ -69,7 +87,10 @@ namespace VolvoToolsGui
             connLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             connectionGroup.Controls.Add(connLayout);
 
-            _deviceFilter = new TextBox { Dock = DockStyle.Fill };
+            _deviceList = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown };
+            _refreshDevices = new Button { Text = "Refresh", Dock = DockStyle.Left, Width = 80 };
+            _connectDevice = new Button { Text = "Connect", Dock = DockStyle.Left, Width = 80 };
+            _driverLabel = new Label { Text = "Driver: -", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft };
             _platform = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
             _baudrate = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
             _ecuId = new TextBox { Dock = DockStyle.Fill, Text = "7A" };
@@ -84,10 +105,18 @@ namespace VolvoToolsGui
             _baudrate.Items.AddRange(new object[] { "500000", "250000" });
             _baudrate.SelectedIndex = 0;
 
-            connLayout.Controls.Add(new Label { Text = "Device filter", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 0, 0);
-            connLayout.Controls.Add(_deviceFilter, 1, 0);
-            connLayout.Controls.Add(new Label { Text = "Platform", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 2, 0);
-            connLayout.Controls.Add(_platform, 3, 0);
+            connLayout.Controls.Add(new Label { Text = "Device", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 0, 0);
+            connLayout.Controls.Add(_deviceList, 1, 0);
+            var deviceButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
+            deviceButtons.Controls.Add(_refreshDevices);
+            deviceButtons.Controls.Add(_connectDevice);
+            connLayout.Controls.Add(deviceButtons, 2, 0);
+            connLayout.Controls.Add(_driverLabel, 3, 0);
+
+            _refreshDevices.Click += async (_, _) => await RefreshDevicesAsync();
+            _connectDevice.Click += async (_, _) => await ConnectDeviceAsync();
+            _deviceList.SelectedIndexChanged += (_, _) => UpdateDriverLabel();
+            _deviceList.TextChanged += (_, _) => UpdateDriverLabel();
 
             connLayout.Controls.Add(new Label { Text = "Baudrate", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 0, 1);
             connLayout.Controls.Add(_baudrate, 1, 1);
@@ -142,6 +171,8 @@ namespace VolvoToolsGui
             logPanel.Controls.Add(_clearLog);
             logGroup.Controls.Add(logPanel);
             main.Controls.Add(logGroup, 0, 2);
+
+            _ = RefreshDevicesAsync();
         }
 
         private void BuildFlasherTab(TabPage tab)
@@ -382,9 +413,10 @@ namespace VolvoToolsGui
 
         private void AppendCommonArgs(List<string> args, int ecuId, ulong pin)
         {
-            if (!string.IsNullOrWhiteSpace(_deviceFilter.Text))
+            var deviceName = GetSelectedDeviceName();
+            if (!string.IsNullOrWhiteSpace(deviceName))
             {
-                args.AddRange(new[] { "-d", Quote(_deviceFilter.Text) });
+                args.AddRange(new[] { "-d", Quote(deviceName) });
             }
 
             args.AddRange(new[] { "-b", _baudrate.SelectedItem!.ToString()! });
@@ -398,6 +430,15 @@ namespace VolvoToolsGui
         private static string Quote(string value)
         {
             return value.Contains(' ') ? "\"" + value + "\"" : value;
+        }
+
+        private string GetSelectedDeviceName()
+        {
+            if (_deviceList.SelectedItem is DeviceItem item)
+            {
+                return item.Name;
+            }
+            return _deviceList.Text.Trim();
         }
 
         private static string? ResolveToolPath(string exeName)
@@ -460,6 +501,131 @@ namespace VolvoToolsGui
             }
 
             return process;
+        }
+
+        private async Task RefreshDevicesAsync()
+        {
+            var exe = ResolveToolPath("VolvoFlasher.exe");
+            if (exe == null)
+            {
+                AppendLog("VolvoFlasher.exe not found next to GUI executable.");
+                return;
+            }
+
+            var output = await RunProcessCaptureAsync(exe, "devices");
+            if (output == null)
+            {
+                return;
+            }
+
+            _devices.Clear();
+            var lines = output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var line in lines)
+            {
+                var parts = line.Split('|');
+                if (parts.Length >= 2)
+                {
+                    _devices.Add(new DeviceItem(parts[0].Trim(), parts[1].Trim()));
+                }
+            }
+
+            _deviceList.BeginUpdate();
+            _deviceList.Items.Clear();
+            foreach (var device in _devices)
+            {
+                _deviceList.Items.Add(device);
+            }
+            _deviceList.EndUpdate();
+
+            if (_deviceList.Items.Count > 0)
+            {
+                _deviceList.SelectedIndex = 0;
+            }
+            UpdateDriverLabel();
+        }
+
+        private async Task ConnectDeviceAsync()
+        {
+            var exe = ResolveToolPath("VolvoFlasher.exe");
+            if (exe == null)
+            {
+                AppendLog("VolvoFlasher.exe not found next to GUI executable.");
+                return;
+            }
+
+            var deviceName = GetSelectedDeviceName();
+            if (string.IsNullOrWhiteSpace(deviceName))
+            {
+                AppendLog("Select a device before connecting.");
+                return;
+            }
+
+            var args = new List<string> { "connect" };
+            args.AddRange(new[] { "-d", Quote(deviceName) });
+            await RunProcessAsync(exe, string.Join(' ', args));
+        }
+
+        private void UpdateDriverLabel()
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(UpdateDriverLabel));
+                return;
+            }
+
+            var device = _deviceList.SelectedItem as DeviceItem;
+            if (device != null)
+            {
+                _driverLabel.Text = $"Driver: {device.Library}";
+                return;
+            }
+
+            var typed = _deviceList.Text.Trim();
+            var match = _devices.FirstOrDefault(d => d.Name.Equals(typed, StringComparison.OrdinalIgnoreCase));
+            _driverLabel.Text = match != null ? $"Driver: {match.Library}" : "Driver: -";
+        }
+
+        private async Task<string?> RunProcessCaptureAsync(string exePath, string arguments)
+        {
+            AppendLog($"> {Path.GetFileName(exePath)} {arguments}");
+            SetBusy(true);
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = exePath,
+                Arguments = arguments,
+                WorkingDirectory = Path.GetDirectoryName(exePath) ?? AppContext.BaseDirectory,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            var output = new StringBuilder();
+            var process = new Process { StartInfo = startInfo };
+            process.OutputDataReceived += (_, e) => { if (e.Data != null) output.AppendLine(e.Data); };
+            process.ErrorDataReceived += (_, e) => { if (e.Data != null) AppendLog(e.Data); };
+
+            try
+            {
+                if (!process.Start())
+                {
+                    AppendLog("Failed to start process.");
+                    return null;
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Start failed: " + ex.Message);
+                return null;
+            }
+
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            await Task.Run(() => process.WaitForExit());
+            SetBusy(false);
+            return output.ToString();
         }
 
         private void AppendLog(string message)

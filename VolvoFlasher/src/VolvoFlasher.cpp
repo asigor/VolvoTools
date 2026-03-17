@@ -50,7 +50,9 @@ enum class RunMode
 	Read,
 	Wakeup,
 	Pin,
-	Test
+	Test,
+	Devices,
+	Connect
 };
 
 enum class TargetModule
@@ -124,11 +126,19 @@ bool getRunOptions(int argc, const char* argv[], std::string& deviceName,
 	argparse::ArgumentParser wakeup_command("wakeup", "1.0", argparse::default_arguments::help);
 	wakeup_command.add_description("Wake up CAN network");
 
+	argparse::ArgumentParser devices_command("devices", "1.0", argparse::default_arguments::help);
+	devices_command.add_description("List available J2534 devices");
+
+	argparse::ArgumentParser connect_command("connect", "1.0", argparse::default_arguments::help);
+	connect_command.add_description("Connect to device and exit");
+
 	program.add_subparser(flash_command);
 	program.add_subparser(read_command);
 	program.add_subparser(test_command);
 	program.add_subparser(pin_command);
 	program.add_subparser(wakeup_command);
+	program.add_subparser(devices_command);
+	program.add_subparser(connect_command);
 	try {
 		program.parse_args(argc, argv);
 		if (program.is_subcommand_used(flash_command)) {
@@ -151,6 +161,12 @@ bool getRunOptions(int argc, const char* argv[], std::string& deviceName,
 		}
 		else if (program.is_subcommand_used(wakeup_command)) {
 			runMode = RunMode::Wakeup;
+		}
+		else if (program.is_subcommand_used(devices_command)) {
+			runMode = RunMode::Devices;
+		}
+		else if (program.is_subcommand_used(connect_command)) {
+			runMode = RunMode::Connect;
 		}
 		else {
 			std::cout << program;
@@ -979,6 +995,36 @@ int main(int argc, const char* argv[]) {
 	TargetModule module = TargetModule::ECU;
 	const auto devices = common::getAvailableDevices();
 	if (getRunOptions(argc, argv, deviceName, baudrate, flashPath, pin, ecuId, start, datasize, runMode, sblPath, carPlatform, scanPinsUpward, module)) {
+		if (runMode == RunMode::Devices) {
+			for (const auto& device : devices) {
+				std::cout << device.deviceName << "|" << device.libraryName << std::endl;
+			}
+			return 0;
+		}
+		if (runMode == RunMode::Connect) {
+			for (const auto& device : devices) {
+				if (deviceName.empty() ||
+					device.deviceName.find(deviceName) != std::string::npos) {
+					try {
+						std::string name =
+							device.deviceName.find("DiCE-") != std::string::npos
+							? device.deviceName
+							: "";
+						std::unique_ptr<j2534::J2534> j2534{
+							std::make_unique<j2534::J2534>(device.libraryName) };
+						j2534->PassThruOpen(name);
+						std::cout << "OK|" << device.deviceName << "|" << device.libraryName << std::endl;
+						return 0;
+					}
+					catch (const std::exception& ex) {
+						std::cout << "ERROR|" << ex.what() << std::endl;
+						return 1;
+					}
+				}
+			}
+			std::cout << "ERROR|Device not found" << std::endl;
+			return 1;
+		}
 		printVolvoStyleHeader(module, carPlatform, ecuId);
 		if (module == TargetModule::CEM) {
 			std::cout << "[Info] CEM mode selected. Ensure selected node ID belongs to CEM for your platform." << std::endl;

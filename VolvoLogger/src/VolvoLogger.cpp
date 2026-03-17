@@ -49,6 +49,7 @@ static bool getRunOptions(int argc, const char *argv[], std::string &deviceName,
   program.add_argument("-o", "--output").help("Path to save logs");
   program.add_argument("-p", "--print").scan<'u', unsigned>().default_value(5u).help("Number of variables which prints to console");
   program.add_argument("-f", "--platform").default_value(std::string{"P2"}).help("Car's platform, supported values: P80, P1, P1_UDS, P2, P2_250, P2_UDS, P3, SPA");
+  program.add_argument("-m", "--module").default_value(std::string{"ECU"}).help("Target module type. Supported values: ECU, CEM");
   program.add_argument("-e", "--ecu").scan<'x', uint8_t>().default_value(uint8_t(0x7A)).help("ECU id to log");
 
   try {
