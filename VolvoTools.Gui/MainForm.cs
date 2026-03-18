@@ -48,6 +48,13 @@ namespace VolvoToolsGui
         private readonly NumericUpDown _loggerPrintCount;
         private readonly TextBox _loggerEcuId;
 
+        private readonly TextBox _cemFlashInput;
+        private readonly TextBox _cemFlashSbl;
+        private readonly TextBox _cemReadOutput;
+        private readonly TextBox _cemEcuId;
+        private readonly TextBox _cemPin;
+        private readonly CheckBox _cemPinDown;
+
         private readonly TextBox _logBox;
         private Process? _loggerProcess;
         private readonly List<DeviceItem> _devices = new();
@@ -55,8 +62,8 @@ namespace VolvoToolsGui
         public MainForm()
         {
             Text = "VolvoTools";
-            Width = 900;
-            Height = 700;
+            Width = 1100;
+            Height = 820;
             StartPosition = FormStartPosition.CenterScreen;
 
             var main = new TableLayoutPanel
@@ -65,9 +72,9 @@ namespace VolvoToolsGui
                 RowCount = 3,
                 ColumnCount = 1
             };
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 190));
             main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 200));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 230));
             Controls.Add(main);
 
             var connectionGroup = new GroupBox { Text = "Connection", Dock = DockStyle.Fill };
@@ -98,9 +105,13 @@ namespace VolvoToolsGui
             _targetModule.Items.AddRange(new object[] { "ECU", "CEM" });
             _targetModule.SelectedIndex = 0;
 
-            _platform.Items.AddRange(new object[] { "P80", "P1", "P1_UDS", "P2", "P2_250", "P2_UDS", "P3", "SPA" });
+            _platform.Items.AddRange(new object[]
+            {
+                "P80", "P1", "P1_UDS", "P2", "P2_250", "P2_UDS", "P3", "SPA",
+                "FORD_KWP", "FORD_UDS", "HAVAL_UDS", "VAG", "VAG_MED91", "VAG_MED912"
+            });
             _platform.SelectedIndex = 3; // P2
-            _baudrate.Items.AddRange(new object[] { "500000", "250000" });
+            _baudrate.Items.AddRange(new object[] { "500000", "250000", "125000" });
             _baudrate.SelectedIndex = 0;
 
             connLayout.Controls.Add(new Label { Text = "Device", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 0, 0);
@@ -133,8 +144,10 @@ namespace VolvoToolsGui
 
             var flasherTab = new TabPage("Flasher");
             var loggerTab = new TabPage("Logger");
+            var cemTab = new TabPage("CEM");
             tabs.TabPages.Add(flasherTab);
             tabs.TabPages.Add(loggerTab);
+            tabs.TabPages.Add(cemTab);
 
             _flashInput = new TextBox { Dock = DockStyle.Fill };
             _flashSbl = new TextBox { Dock = DockStyle.Fill };
@@ -150,6 +163,15 @@ namespace VolvoToolsGui
             _loggerEcuId = new TextBox { Dock = DockStyle.Fill, Text = "7A" };
 
             BuildLoggerTab(loggerTab);
+
+            _cemFlashInput = new TextBox { Dock = DockStyle.Fill };
+            _cemFlashSbl = new TextBox { Dock = DockStyle.Fill };
+            _cemReadOutput = new TextBox { Dock = DockStyle.Fill };
+            _cemEcuId = new TextBox { Dock = DockStyle.Fill, Text = "7A" };
+            _cemPin = new TextBox { Dock = DockStyle.Fill, Text = "0" };
+            _cemPinDown = new CheckBox { Text = "Scan down (PIN)", Dock = DockStyle.Left };
+
+            BuildCemTab(cemTab);
 
             _logBox = new TextBox
             {
@@ -277,7 +299,68 @@ namespace VolvoToolsGui
             layout.SetColumnSpan(buttons, 4);
         }
 
-        private async Task RunFlasherAsync(string mode)
+        private void BuildCemTab(TabPage tab)
+        {
+            var layout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 4,
+                RowCount = 6
+            };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            tab.Controls.Add(layout);
+
+            layout.Controls.Add(new Label { Text = "CEM ECU ID (hex)", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 0, 0);
+            layout.Controls.Add(_cemEcuId, 1, 0);
+            layout.Controls.Add(new Label { Text = "CEM PIN (hex)", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 2, 0);
+            layout.Controls.Add(_cemPin, 3, 0);
+
+            layout.Controls.Add(new Label { Text = "Flash input", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 0, 1);
+            layout.Controls.Add(_cemFlashInput, 1, 1);
+            var pickFlash = new Button { Text = "...", Dock = DockStyle.Left, Width = 30 };
+            pickFlash.Click += (_, _) => PickFile(_cemFlashInput, "BIN files|*.bin|All files|*.*");
+            layout.Controls.Add(pickFlash, 2, 1);
+
+            layout.Controls.Add(new Label { Text = "SBL (optional)", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 0, 2);
+            layout.Controls.Add(_cemFlashSbl, 1, 2);
+            var pickSbl = new Button { Text = "...", Dock = DockStyle.Left, Width = 30 };
+            pickSbl.Click += (_, _) => PickFile(_cemFlashSbl, "BIN files|*.bin|All files|*.*");
+            layout.Controls.Add(pickSbl, 2, 2);
+
+            layout.Controls.Add(new Label { Text = "Read output", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 0, 3);
+            layout.Controls.Add(_cemReadOutput, 1, 3);
+            var pickRead = new Button { Text = "...", Dock = DockStyle.Left, Width = 30 };
+            pickRead.Click += (_, _) => PickSaveFile(_cemReadOutput, "BIN files|*.bin|All files|*.*");
+            layout.Controls.Add(pickRead, 2, 3);
+
+            layout.Controls.Add(_cemPinDown, 1, 4);
+            layout.SetColumnSpan(_cemPinDown, 3);
+
+            var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
+            var flashBtn = new Button { Text = "Flash CEM", Width = 120 };
+            var readBtn = new Button { Text = "Read CEM", Width = 120 };
+            var pinBtn = new Button { Text = "Find PIN", Width = 100 };
+            var wakeBtn = new Button { Text = "Wakeup", Width = 100 };
+
+            flashBtn.Click += async (_, _) => await RunFlasherAsync("flash", "CEM", _cemEcuId.Text, _cemPin.Text, _cemFlashInput.Text, _cemFlashSbl.Text, _cemReadOutput.Text, _cemPinDown.Checked);
+            readBtn.Click += async (_, _) => await RunFlasherAsync("read", "CEM", _cemEcuId.Text, _cemPin.Text, _cemFlashInput.Text, _cemFlashSbl.Text, _cemReadOutput.Text, _cemPinDown.Checked);
+            pinBtn.Click += async (_, _) => await RunFlasherAsync("pin", "CEM", _cemEcuId.Text, _cemPin.Text, _cemFlashInput.Text, _cemFlashSbl.Text, _cemReadOutput.Text, _cemPinDown.Checked);
+            wakeBtn.Click += async (_, _) => await RunFlasherAsync("wakeup", "CEM", _cemEcuId.Text, _cemPin.Text, _cemFlashInput.Text, _cemFlashSbl.Text, _cemReadOutput.Text, _cemPinDown.Checked);
+
+            buttons.Controls.Add(flashBtn);
+            buttons.Controls.Add(readBtn);
+            buttons.Controls.Add(pinBtn);
+            buttons.Controls.Add(wakeBtn);
+
+            layout.Controls.Add(buttons, 0, 5);
+            layout.SetColumnSpan(buttons, 4);
+        }
+
+        private async Task RunFlasherAsync(string mode, string? moduleOverride = null, string? ecuText = null, string? pinText = null,
+            string? flashInput = null, string? flashSbl = null, string? readOutput = null, bool pinDown = false)
         {
             var exe = ResolveToolPath("VolvoFlasher.exe");
             if (exe == null)
@@ -286,47 +369,53 @@ namespace VolvoToolsGui
                 return;
             }
 
-            if (!TryGetHexByte(_ecuId.Text, out var ecuId))
+            var ecuInput = ecuText ?? _ecuId.Text;
+            var pinInput = pinText ?? _pin.Text;
+
+            if (!TryGetHexByte(ecuInput, out var ecuId))
             {
                 AppendLog("ECU ID must be a hex byte (00-FF).");
                 return;
             }
-            if (!TryGetHexUInt64(_pin.Text, out var pin))
+            if (!TryGetHexUInt64(pinInput, out var pin))
             {
                 AppendLog("PIN must be hex.");
                 return;
             }
 
             var args = new List<string>();
-            AppendCommonArgs(args, ecuId, pin);
+            AppendCommonArgs(args, ecuId, pin, moduleOverride);
 
             switch (mode)
             {
                 case "flash":
-                    if (string.IsNullOrWhiteSpace(_flashInput.Text))
+                    var flashPath = flashInput ?? _flashInput.Text;
+                    var sblPath = flashSbl ?? _flashSbl.Text;
+                    if (string.IsNullOrWhiteSpace(flashPath))
                     {
                         AppendLog("Flash input file is required.");
                         return;
                     }
                     args.Add("flash");
-                    args.AddRange(new[] { "-i", Quote(_flashInput.Text) });
-                    if (!string.IsNullOrWhiteSpace(_flashSbl.Text))
+                    args.AddRange(new[] { "-i", Quote(flashPath) });
+                    if (!string.IsNullOrWhiteSpace(sblPath))
                     {
-                        args.AddRange(new[] { "-s", Quote(_flashSbl.Text) });
+                        args.AddRange(new[] { "-s", Quote(sblPath) });
                     }
                     break;
                 case "read":
-                    if (string.IsNullOrWhiteSpace(_readOutput.Text))
+                    var outputPath = readOutput ?? _readOutput.Text;
+                    if (string.IsNullOrWhiteSpace(outputPath))
                     {
                         AppendLog("Read output file is required.");
                         return;
                     }
                     args.Add("read");
-                    args.AddRange(new[] { "-o", Quote(_readOutput.Text) });
+                    args.AddRange(new[] { "-o", Quote(outputPath) });
                     break;
                 case "pin":
                     args.Add("pin");
-                    if (_pinDown.Checked)
+                    if (pinDown || _pinDown.Checked)
                     {
                         args.Add("-d");
                     }
@@ -396,7 +485,7 @@ namespace VolvoToolsGui
             }
         }
 
-        private void AppendCommonArgs(List<string> args, int ecuId, ulong pin)
+        private void AppendCommonArgs(List<string> args, int ecuId, ulong pin, string? moduleOverride = null)
         {
             var deviceName = GetSelectedDeviceName();
             if (!string.IsNullOrWhiteSpace(deviceName))
@@ -406,7 +495,8 @@ namespace VolvoToolsGui
 
             args.AddRange(new[] { "-b", _baudrate.SelectedItem!.ToString()! });
             args.AddRange(new[] { "-f", _platform.SelectedItem!.ToString()! });
-            args.AddRange(new[] { "-m", _targetModule.SelectedItem!.ToString()! });
+            var module = moduleOverride ?? _targetModule.SelectedItem!.ToString()!;
+            args.AddRange(new[] { "-m", module });
 
             args.AddRange(new[] { "-e", ecuId.ToString("X2") });
             args.AddRange(new[] { "-p", pin.ToString("X") });
