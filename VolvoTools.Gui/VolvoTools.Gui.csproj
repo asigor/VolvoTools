@@ -8,4 +8,10 @@
     <AssemblyName>VolvoToolsGui</AssemblyName>
     <RootNamespace>VolvoToolsGui</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <Content Include="VolvoToolsGui.config.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
 </Project>

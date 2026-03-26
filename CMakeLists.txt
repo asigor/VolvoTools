@@ -32,7 +32,9 @@ if (WIN32)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
-    install(FILES "${CMAKE_BINARY_DIR}/gui/VolvoToolsGui.exe"
+    install(FILES
+        "${CMAKE_BINARY_DIR}/gui/VolvoToolsGui.exe"
+        "${CMAKE_BINARY_DIR}/gui/VolvoToolsGui.config.json"
         DESTINATION .
     )
 endif()
