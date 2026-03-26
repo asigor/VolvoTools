@@ -37,15 +37,17 @@ VolvoFlasher -f P2 -m ECU -e 0x7A flash -i your_file.bin
 ```
 
 
-## Installer EXE (x86/x64)
+## Installer EXE (single package)
 
-The CI pipeline now generates Windows installers (`.exe`) for both architectures:
+The CI pipeline now generates one Windows installer artifact:
 
-- `VolvoTools_Installer_x86`
-- `VolvoTools_Installer_x64`
+- `VolvoTools_Installer.exe`
 
-Installers are produced with CPack/NSIS and published as workflow artifacts.
-For tag builds, both installers are attached to the GitHub Release.
+Installer is produced with CPack/NSIS and published as workflow artifact.
+For tag builds, the same single installer is attached to the GitHub Release.
+
+After installation you can edit GUI defaults in `VolvoToolsGui.config.json`
+(placed next to `VolvoToolsGui.exe`) to change default module/platform/baudrate/PIN fields.
 
 ## Сборка проекта
 ### Требуемые приложения

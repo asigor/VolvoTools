@@ -56,11 +56,14 @@ namespace VolvoToolsGui
         private readonly CheckBox _cemPinDown;
 
         private readonly TextBox _logBox;
+        private readonly GuiConfig _config;
         private Process? _loggerProcess;
         private readonly List<DeviceItem> _devices = new();
 
         public MainForm()
         {
+            var configPath = Path.Combine(AppContext.BaseDirectory, "VolvoToolsGui.config.json");
+            _config = GuiConfig.Load(configPath);
             Text = "VolvoTools";
             Width = 1100;
             Height = 820;
@@ -98,21 +101,21 @@ namespace VolvoToolsGui
             _driverLabel = new Label { Text = "Driver: -", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft };
             _platform = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
             _baudrate = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-            _ecuId = new TextBox { Dock = DockStyle.Fill, Text = "7A" };
-            _pin = new TextBox { Dock = DockStyle.Fill, Text = "0" };
-            _pinDown = new CheckBox { Text = "Scan down (PIN)", Dock = DockStyle.Left };
+            _ecuId = new TextBox { Dock = DockStyle.Fill, Text = _config.DefaultEcuId ?? "7A" };
+            _pin = new TextBox { Dock = DockStyle.Fill, Text = _config.DefaultPin ?? "0" };
+            _pinDown = new CheckBox { Text = "Scan down (PIN)", Dock = DockStyle.Left, Checked = _config.DefaultPinScanDown ?? false };
             _targetModule = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
             _targetModule.Items.AddRange(new object[] { "ECU", "CEM" });
-            _targetModule.SelectedIndex = 0;
+            SelectComboItem(_targetModule, _config.DefaultModule, "ECU");
 
             _platform.Items.AddRange(new object[]
             {
                 "P80", "P1", "P1_UDS", "P2", "P2_250", "P2_UDS", "P3", "SPA",
                 "FORD_KWP", "FORD_UDS", "HAVAL_UDS", "VAG", "VAG_MED91", "VAG_MED912"
             });
-            _platform.SelectedIndex = 3; // P2
+            SelectComboItem(_platform, _config.DefaultPlatform, "P2");
             _baudrate.Items.AddRange(new object[] { "500000", "250000", "125000" });
-            _baudrate.SelectedIndex = 0;
+            SelectComboItem(_baudrate, _config.DefaultBaudrate, "500000");
 
             connLayout.Controls.Add(new Label { Text = "Device", Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleLeft }, 0, 0);
             connLayout.Controls.Add(_deviceList, 1, 0);
@@ -159,17 +162,17 @@ namespace VolvoToolsGui
 
             _loggerVars = new TextBox { Dock = DockStyle.Fill };
             _loggerOutput = new TextBox { Dock = DockStyle.Fill };
-            _loggerPrintCount = new NumericUpDown { Dock = DockStyle.Left, Minimum = 1, Maximum = 50, Value = 5 };
-            _loggerEcuId = new TextBox { Dock = DockStyle.Fill, Text = "7A" };
+            _loggerPrintCount = new NumericUpDown { Dock = DockStyle.Left, Minimum = 1, Maximum = 50, Value = ClampLoggerPrintCount(_config.LoggerDefaultPrintCount) };
+            _loggerEcuId = new TextBox { Dock = DockStyle.Fill, Text = _config.LoggerDefaultEcuId ?? "7A" };
 
             BuildLoggerTab(loggerTab);
 
             _cemFlashInput = new TextBox { Dock = DockStyle.Fill };
             _cemFlashSbl = new TextBox { Dock = DockStyle.Fill };
             _cemReadOutput = new TextBox { Dock = DockStyle.Fill };
-            _cemEcuId = new TextBox { Dock = DockStyle.Fill, Text = "7A" };
-            _cemPin = new TextBox { Dock = DockStyle.Fill, Text = "0" };
-            _cemPinDown = new CheckBox { Text = "Scan down (PIN)", Dock = DockStyle.Left };
+            _cemEcuId = new TextBox { Dock = DockStyle.Fill, Text = _config.CemDefaultEcuId ?? "7A" };
+            _cemPin = new TextBox { Dock = DockStyle.Fill, Text = _config.CemDefaultPin ?? "0" };
+            _cemPinDown = new CheckBox { Text = "Scan down (PIN)", Dock = DockStyle.Left, Checked = _config.CemDefaultPinScanDown ?? false };
 
             BuildCemTab(cemTab);
 
@@ -357,6 +360,39 @@ namespace VolvoToolsGui
 
             layout.Controls.Add(buttons, 0, 5);
             layout.SetColumnSpan(buttons, 4);
+        }
+
+
+        private static decimal ClampLoggerPrintCount(decimal? value)
+        {
+            if (!value.HasValue)
+            {
+                return 5m;
+            }
+
+            if (value.Value < 1m)
+            {
+                return 1m;
+            }
+
+            if (value.Value > 50m)
+            {
+                return 50m;
+            }
+
+            return decimal.Round(value.Value, 0, MidpointRounding.AwayFromZero);
+        }
+
+        private static void SelectComboItem(ComboBox comboBox, string? configuredValue, string fallbackValue)
+        {
+            var selectedValue = configuredValue ?? fallbackValue;
+            var index = comboBox.FindStringExact(selectedValue);
+            if (index < 0)
+            {
+                index = comboBox.FindStringExact(fallbackValue);
+            }
+
+            comboBox.SelectedIndex = index >= 0 ? index : 0;
         }
 
         private async Task RunFlasherAsync(string mode, string? moduleOverride = null, string? ecuText = null, string? pinText = null,

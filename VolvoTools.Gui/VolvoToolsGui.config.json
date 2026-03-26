@@ -1,0 +1,13 @@
+{
+  "DefaultPlatform": "P2",
+  "DefaultBaudrate": "500000",
+  "DefaultModule": "ECU",
+  "DefaultEcuId": "7A",
+  "DefaultPin": "0",
+  "DefaultPinScanDown": false,
+  "CemDefaultEcuId": "7A",
+  "CemDefaultPin": "0",
+  "CemDefaultPinScanDown": false,
+  "LoggerDefaultEcuId": "7A",
+  "LoggerDefaultPrintCount": 5
+}
