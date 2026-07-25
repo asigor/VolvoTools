@@ -1,11 +1,11 @@
 #include "flasher/FlasherBase.hpp"
 
-#include "flasher/FlasherCallback.hpp"
-
+#include <common/ICanChannel.hpp>
 #include <j2534/J2534.hpp>
 #include <j2534/J2534Channel.hpp>
 
-#include <easylogging++.h>
+#define LOG_MODULE_NAME "flasher"
+#include <common/LogHelper.hpp>
 
 #include <numeric>
 
@@ -19,9 +19,10 @@ size_t FlasherBase::getProgressFromVBF(const common::VBF& vbf)
                            });
 }
 
-FlasherBase::FlasherBase(j2534::J2534 &j2534, FlasherParameters&& flasherParameters)
-    : _j2534ChannelProvider{ j2534, flasherParameters.carPlatform }
-    , _flasherParameters{ std::move(flasherParameters) }
+FlasherBase::FlasherBase(j2534::J2534 &j2534, common::CarPlatform carPlatform, uint32_t ecuId)
+    : _j2534ChannelProvider{ j2534, carPlatform }
+    , _carPlatform{ carPlatform }
+    , _ecuId{ ecuId }
     , _currentProgress{ 0 }
     , _maximumProgress{ 0 }
     , _currentState{ FlasherState::Initial }
@@ -55,35 +56,18 @@ size_t FlasherBase::getMaximumProgress() const
     return _maximumProgress;
 }
 
-void FlasherBase::registerCallback(FlasherCallback &callback)
-{
-    std::unique_lock<std::mutex> lock{_mutex};
-    _callbacks.push_back(&callback);
-}
-
-void FlasherBase::unregisterCallback(FlasherCallback &callback)
-{
-    std::unique_lock<std::mutex> lock{_mutex};
-    _callbacks.erase(std::remove(_callbacks.begin(), _callbacks.end(), &callback),
-                     _callbacks.end());
-}
-
 void FlasherBase::start()
 {
     _flasherThread = std::thread([this]() {
+        LOG_SCOPE_DURATION(FlasherBase_start);
         try {
-            auto channels{_j2534ChannelProvider.getAllChannels(_flasherParameters.ecuId)};
+            auto channels{_j2534ChannelProvider.getAllChannels(_ecuId)};
             startImpl(channels);
         }
         catch(...) {
             setCurrentState(FlasherState::Error);
         }
     });
-}
-
-const FlasherParameters& FlasherBase::getFlasherParameters() const
-{
-    return _flasherParameters;
 }
 
 void FlasherBase::setCurrentState(FlasherState state)
@@ -128,20 +112,14 @@ void FlasherBase::runOnThread(std::function<void()> callable)
             callable();
         }
         catch(const std::exception& ex) {
-            LOG(ERROR) << "Exception during flashing, what = " << ex.what();
+            LOG_MODULE(ERROR) << "Exception during flashing, what = " << ex.what();
             setCurrentState(FlasherState::Error);
         }
         catch(...) {
-            LOG(ERROR) << "Exception during flashing";
+            LOG_MODULE(ERROR) << "Exception during flashing";
             setCurrentState(FlasherState::Error);
         }
     });
-}
-
-std::vector<FlasherCallback *> FlasherBase::getCallbacks() const
-{
-    std::unique_lock<std::mutex> lock(_mutex);
-    return _callbacks;
 }
 
 } // namespace flasher

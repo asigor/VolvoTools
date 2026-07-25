@@ -2,9 +2,12 @@
 
 #include "common/protocols/UDSRequest.hpp"
 #include "common/protocols/UDSError.hpp"
+#include "common/ICanChannel.hpp"
 #include "common/Util.hpp"
 
-#include <easylogging++.h>
+#include <array>
+#define LOG_MODULE_NAME "common"
+#include "common/LogHelper.hpp"
 
 #include <thread>
 
@@ -39,93 +42,83 @@ namespace common {
 
 	}
 
-	std::vector<std::unique_ptr<j2534::J2534Channel>> UDSProtocolCommonSteps::openChannels(
-		j2534::J2534& j2534, unsigned long baudrate, uint32_t canId)
-    {
-        LOG(INFO) << "openChannels enter";
-        std::vector<std::unique_ptr<j2534::J2534Channel>> result;
-		result.emplace_back(openUDSChannel(j2534, baudrate, canId));
-		result.emplace_back(openLowSpeedChannel(j2534, CAN_ID_BOTH));
-        LOG(INFO) << "openChannels exit";
-        return result;
-	}
-
-	bool UDSProtocolCommonSteps::fallAsleep(const std::vector<std::unique_ptr<j2534::J2534Channel>>& channels)
+	bool UDSProtocolCommonSteps::fallAsleep(const std::vector<std::unique_ptr<ICanChannel>>& channels,
+                                             uint32_t funcCanId)
 	{
-        LOG(INFO) << "fallAsleep enter";
-        std::vector<std::vector<unsigned long>> msgIds(channels.size());
+        LOG_MODULE(TRACE) << "fallAsleep enter";
 		for (size_t i = 0; i < channels.size(); ++i) {
-			const auto ids = channels[i]->startPeriodicMsgs(UDSMessage(0x7DF, { 0x10, 0x02 }), 5);
-			if (ids.empty()) {
+			unsigned long msgId;
+			if (!channels[i]->startPeriodicMsg({funcCanId, {0x10, 0x02}}, 5, msgId)) {
 				return false;
 			}
-			msgIds[i] = ids;
+			std::this_thread::sleep_for(std::chrono::seconds(2));
+			channels[i]->stopPeriodicMsg(msgId);
 		}
-		std::this_thread::sleep_for(std::chrono::seconds(2));
-		for (size_t i = 0; i < channels.size(); ++i) {
-			channels[i]->stopPeriodicMsg(msgIds[i]);
-		}
-        LOG(INFO) << "fallAsleep exit";
+        LOG_MODULE(TRACE) << "fallAsleep exit";
         return true;
 	}
 
-	std::vector<unsigned long> UDSProtocolCommonSteps::keepAlive(const j2534::J2534Channel& channel)
+	std::vector<unsigned long> UDSProtocolCommonSteps::keepAlive(ICanChannel& channel,
+                                                                   uint32_t funcCanId)
 	{
-		return channel.startPeriodicMsgs(UDSMessage(0x7DF, { 0x3E, 0x80 }), 1900);
+		std::vector<unsigned long> result;
+		unsigned long msgId;
+		if (channel.startPeriodicMsg({funcCanId, {0x3E, 0x80}}, 1900, msgId)) {
+			result.push_back(msgId);
+		}
+		return result;
 	}
 
-	void UDSProtocolCommonSteps::wakeUp(const std::vector<std::unique_ptr<j2534::J2534Channel>>& channels)
+	void UDSProtocolCommonSteps::wakeUp(const std::vector<std::unique_ptr<ICanChannel>>& channels,
+                                         uint32_t funcCanId)
 	{
-        LOG(INFO) << "wakeUp enter";
+        LOG_MODULE(TRACE) << "wakeUp enter";
         for(const auto& idToWakeUp: {0x11, 0x81}) {
-            std::vector<std::vector<unsigned long>> msgIds(channels.size());
             for (size_t i = 0; i < channels.size(); ++i) {
-                const auto ids = channels[i]->startPeriodicMsgs(UDSMessage(0x7DF, { 0x11, static_cast<uint8_t>(idToWakeUp) }), 20);
-                if (ids.empty()) {
-                    LOG(ERROR) << "wakeUp error, failed to start periodic messages on channel = " << i;
+                unsigned long msgId;
+                if (!channels[i]->startPeriodicMsg({funcCanId, {0x11, static_cast<uint8_t>(idToWakeUp)}}, 20, msgId)) {
+                    LOG_MODULE(ERROR) << "wakeUp error, failed to start periodic message on channel = " << i;
                     return;
                 }
-                msgIds[i] = ids;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            for (size_t i = 0; i < channels.size(); ++i) {
-                channels[i]->stopPeriodicMsg(msgIds[i]);
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                channels[i]->stopPeriodicMsg(msgId);
             }
         }
-        LOG(INFO) << "wakeUp exit";
+        LOG_MODULE(TRACE) << "wakeUp exit";
         return;
 	}
 
-	bool UDSProtocolCommonSteps::authorize(const j2534::J2534Channel& channel, uint32_t canId,
+	bool UDSProtocolCommonSteps::authorize(ICanChannel& channel, uint32_t canId,
 		const std::array<uint8_t, 5>& pin)
 	{
-        LOG(INFO) << "authorize enter pin: "<< std::hex << pin[0] << pin[1] << pin[2] << pin[3] << pin[4];
+        LOG_SCOPE_DURATION(authorize);
+        LOG_MODULE(TRACE) << "authorize enter pin: "<< std::hex << pin[0] << pin[1] << pin[2] << pin[3] << pin[4];
         UDSRequest seedRequest(canId, { 0x27, 0x01 });
         for(size_t i = 0; i < 5; ++i) {
             try {
                 channel.clearRx();
                 const auto seedResponse(seedRequest.process(channel));
-                if (seedResponse.size() < 9)
+                if (seedResponse.size() < 5)
                     return false;
-                std::array<uint8_t, 3> seed = { seedResponse[6], seedResponse[7], seedResponse[8] };
+                std::array<uint8_t, 3> seed = { seedResponse[2], seedResponse[3], seedResponse[4] };
                 uint32_t key = generateKey(pin, seed);
                 channel.clearRx();
                 UDSRequest keyRequest(canId, { 0x27, 0x02, (key >> 16) & 0xFF, (key >> 8) & 0xFF, key & 0xFF });
                 try {
                     const auto keyResponse(keyRequest.process(channel));
-                    const bool result = keyResponse.size() >= 6 && keyResponse[5] == 0x02;
+                    const bool result = keyResponse.size() >= 2 && keyResponse[1] == 0x02;
                     if(!result) {
-                        LOG(ERROR) << "authorize wrong pin, pin: "<< std::hex << pin[0] << pin[1] << pin[2] << pin[3] << pin[4];
+                        LOG_MODULE(ERROR) << "authorize wrong pin, pin: "<< std::hex << pin[0] << pin[1] << pin[2] << pin[3] << pin[4];
                     }
                     else {
-                        LOG(INFO) << "authorize success, pin: "<< std::hex << pin[0] << pin[1] << pin[2] << pin[3] << pin[4];
+                        LOG_MODULE(INFO) << "authorize success, pin: "<< std::hex << pin[0] << pin[1] << pin[2] << pin[3] << pin[4];
                     }
                     return result;
                 }
                 catch(UDSError& error) {
                     if(error.getErrorCode() == UDSError::ErrorCode::RequiredTimeDelayHasNotExpired) {
                     }
-                    LOG(ERROR) << "authorize error: " << error.what() << ", pin = "
+                    LOG_MODULE(ERROR) << "authorize error: " << error.what() << ", pin = "
                                << std::hex << pin[0] << pin[1] << pin[2] << pin[3] << pin[4];
                 }
             }
@@ -133,21 +126,21 @@ namespace common {
                 std::this_thread::sleep_for(std::chrono::seconds(5));
             }
         }
-        LOG(INFO) << "authorization failed, pin: "<< std::hex << pin[0] << pin[1] << pin[2] << pin[3] << pin[4];
+        LOG_MODULE(TRACE) << "authorization failed, pin: "<< std::hex << pin[0] << pin[1] << pin[2] << pin[3] << pin[4];
         return false;
 	}
 
-    bool UDSProtocolCommonSteps::transferChunk(const j2534::J2534Channel& channel, uint32_t canId, const VBFChunk& chunk,
+    bool UDSProtocolCommonSteps::transferChunk(ICanChannel& channel, uint32_t canId, const VBFChunk& chunk,
                                               const std::function<void(size_t)>& progressCallback)
 	{
-        LOG(INFO) << "transferChunk enter chunk: " << std::hex << chunk.writeOffset;
+        LOG_SCOPE_DURATION(transferChunk);
+        LOG_MODULE(TRACE) << "transferChunk enter chunk: " << std::hex << chunk.writeOffset;
         try {
             const auto startAddr = chunk.writeOffset;
             const auto dataSize = chunk.data.size();
             UDSRequest requestDownloadRequest{ canId, { 0x34, 0x00, 0x44,
                 (startAddr >> 24) & 0xFF, (startAddr >> 16) & 0xFF, (startAddr >> 8) & 0xFF, startAddr & 0xFF,
                 (dataSize >> 24) & 0xFF, (dataSize >> 16) & 0xFF, (dataSize >> 8) & 0xFF, dataSize & 0xFF } };
-            unsigned long numMsgs;
             const auto downloadResponse{ requestDownloadRequest.process(channel, { 0x20 }, 10) };
             if (downloadResponse.size() < 2) {
                 return false;
@@ -156,35 +149,36 @@ namespace common {
             uint8_t chunkIndex = 1;
             for (size_t i = 0; i < chunk.data.size(); i += maxSizeToTransfer, ++chunkIndex) {
                 const auto chunkEnd{ std::min(i + maxSizeToTransfer, chunk.data.size()) };
-                LOG(INFO) << "transferChunk write chunk: {" << std::hex << i << ", " << chunkEnd <<"}";
+                LOG_MODULE(INFO) << "transferChunk write chunk: {" << std::hex << i << ", " << chunkEnd <<"}";
                 std::vector<uint8_t> data{ 0x36, chunkIndex };
                 data.insert(data.end(), chunk.data.cbegin() + i, chunk.data.cbegin() + chunkEnd);
                 UDSRequest transferDataRequest{ canId, std::move(data) };
                 transferDataRequest.process(channel, { chunkIndex }, 10, 60000);
                 progressCallback(chunkEnd - i);
             }
-            LOG(INFO) << "transferChunk finish transfer, crc: {" << std::hex
+            LOG_MODULE(INFO) << "transferChunk finish transfer, crc: {" << std::hex
                       << ((chunk.crc >> 8) & 0xFF) << ", " << (chunk.crc & 0xFF) <<"}";
             UDSRequest transferExitRequest{ canId, { 0x37 } };
             transferExitRequest.process(
                 channel, { static_cast<uint8_t>(chunk.crc >> 8), static_cast<uint8_t>(chunk.crc) }, 3, 10000);
 		}
         catch(const std::exception& ex) {
-            LOG(ERROR) << "transferChunk error, ex = " << ex.what() << ", offset = " << std::hex << chunk.writeOffset;
+            LOG_MODULE(ERROR) << "transferChunk error, ex = " << ex.what() << ", offset = " << std::hex << chunk.writeOffset;
             return false;
         }
         catch (...) {
-            LOG(ERROR) << "transferChunk error: offset = " << std::hex << chunk.writeOffset;
+            LOG_MODULE(ERROR) << "transferChunk error: offset = " << std::hex << chunk.writeOffset;
             return false;
         }
-        LOG(INFO) << "transferChunk completed, offset = " << std::hex << chunk.writeOffset;
+        LOG_MODULE(TRACE) << "transferChunk completed, offset = " << std::hex << chunk.writeOffset;
 		return true;
 	}
 
-    bool UDSProtocolCommonSteps::transferData(const j2534::J2534Channel& channel, uint32_t canId, const VBF& data,
+    bool UDSProtocolCommonSteps::transferData(ICanChannel& channel, uint32_t canId, const VBF& data,
                                               const std::function<void(size_t)>& progressCallback)
     {
-        LOG(INFO) << "transferData enter";
+        LOG_SCOPE_DURATION(transferData);
+        LOG_MODULE(TRACE) << "transferData enter";
         try {
             for (const auto& chunk : data.chunks) {
                 const auto startAddr = chunk.writeOffset;
@@ -192,7 +186,6 @@ namespace common {
                 UDSRequest requestDownloadRequest{ canId, { 0x34, 0x00, 0x44,
                                                           (startAddr >> 24) & 0xFF, (startAddr >> 16) & 0xFF, (startAddr >> 8) & 0xFF, startAddr & 0xFF,
                                                           (dataSize >> 24) & 0xFF, (dataSize >> 16) & 0xFF, (dataSize >> 8) & 0xFF, dataSize & 0xFF } };
-                unsigned long numMsgs;
                 const auto downloadResponse{ requestDownloadRequest.process(channel, { 0x20 }, 10) };
                 if (downloadResponse.size() < 2) {
                     return false;
@@ -213,30 +206,29 @@ namespace common {
             }
         }
         catch(const std::exception& ex) {
-            LOG(ERROR) << "transferData error, ex = " << ex.what();
+            LOG_MODULE(ERROR) << "transferData error, ex = " << ex.what();
             return false;
         }
         catch (...) {
-            LOG(ERROR) << "transferData error";
+            LOG_MODULE(ERROR) << "transferData error";
             return false;
         }
-        LOG(INFO) << "transferData completed";
+        LOG_MODULE(TRACE) << "transferData completed";
 
         return true;
     }
 
-    bool UDSProtocolCommonSteps::eraseFlash(const j2534::J2534Channel& channel, uint32_t canId, const VBF& data)
+    bool UDSProtocolCommonSteps::eraseFlash(ICanChannel& channel, uint32_t canId, const VBF& data)
     {
-        LOG(INFO) << "eraseFlash enter";
+        LOG_SCOPE_DURATION(eraseFlash);
+        LOG_MODULE(TRACE) << "eraseFlash enter";
         for (const auto& chunk : data.chunks) {
 			const auto eraseAddr = toVector(chunk.writeOffset);
 			const auto eraseSize = toVector(static_cast<uint32_t>(chunk.data.size()));
-			UDSMessage eraseRoutineMsg(canId, { 0x31, 0x01, 0xff, 0x00,
-				eraseAddr[0], eraseAddr[1], eraseAddr[2], eraseAddr[3],
-				eraseSize[0], eraseSize[1], eraseSize[2], eraseSize[3] });
-			unsigned long numMsgs;
             for(size_t i = 0; i < 10; ++i) {
-                if (channel.writeMsgs(eraseRoutineMsg, numMsgs) != STATUS_NOERROR || numMsgs < 1) {
+                if (!channel.send({canId, {0x31, 0x01, 0xff, 0x00,
+                    eraseAddr[0], eraseAddr[1], eraseAddr[2], eraseAddr[3],
+                    eraseSize[0], eraseSize[1], eraseSize[2], eraseSize[3]}})) {
                     continue;
                 }
                 const auto result{ readMessageCheckAndGet(channel, { 0x71, 0x01, 0xff, 0x00, 0x00 }, {}, 10) };
@@ -244,25 +236,23 @@ namespace common {
                     std::this_thread::sleep_for(std::chrono::milliseconds(500));
                     continue;
                 }
+                LOG_MODULE(TRACE) << "eraseFlash completed";
                 return true;
-                LOG(INFO) << "eraseFlash completed";
             }
 		}
-        LOG(ERROR) << "Failed to erase data";
+        LOG_MODULE(ERROR) << "Failed to erase data";
         return false;
 	}
 
-    bool UDSProtocolCommonSteps::eraseChunk(const j2534::J2534Channel& channel, uint32_t canId, const VBFChunk& chunk)
+    bool UDSProtocolCommonSteps::eraseChunk(ICanChannel& channel, uint32_t canId, const VBFChunk& chunk)
     {
-        LOG(INFO) << "eraseChunk enter chunk: " << std::hex << chunk.writeOffset;
+        LOG_MODULE(TRACE) << "eraseChunk enter chunk: " << std::hex << chunk.writeOffset;
         const auto eraseAddr = toVector(chunk.writeOffset);
         const auto eraseSize = toVector(static_cast<uint32_t>(chunk.data.size()));
-        UDSMessage eraseRoutineMsg(canId, { 0x31, 0x01, 0xff, 0x00,
-                                           eraseAddr[0], eraseAddr[1], eraseAddr[2], eraseAddr[3],
-                                           eraseSize[0], eraseSize[1], eraseSize[2], eraseSize[3] });
-        unsigned long numMsgs;
         for(size_t i = 0; i < 1; ++i) {
-            if (channel.writeMsgs(eraseRoutineMsg, numMsgs) != STATUS_NOERROR || numMsgs < 1) {
+            if (!channel.send({canId, {0x31, 0x01, 0xff, 0x00,
+                                       eraseAddr[0], eraseAddr[1], eraseAddr[2], eraseAddr[3],
+                                       eraseSize[0], eraseSize[1], eraseSize[2], eraseSize[3]}})) {
                 continue;
             }
             const auto result{ readMessageCheckAndGet(channel, { 0x71, 0x01, 0xff, 0x00, 0x00 }, {}, 10) };
@@ -270,43 +260,41 @@ namespace common {
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 continue;
             }
-            LOG(INFO) << "eraseChunk completed, offset = " << std::hex << chunk.writeOffset;
+            LOG_MODULE(TRACE) << "eraseChunk completed, offset = " << std::hex << chunk.writeOffset;
             return true;
         }
-        LOG(ERROR) << "Failed to erase chunk: " << std::hex << chunk.writeOffset;
+        LOG_MODULE(ERROR) << "Failed to erase chunk: " << std::hex << chunk.writeOffset;
         return false;
     }
 
-    bool UDSProtocolCommonSteps::startRoutine(const j2534::J2534Channel& channel, uint32_t canId, uint32_t addr)
+    bool UDSProtocolCommonSteps::startRoutine(ICanChannel& channel, uint32_t canId, uint32_t addr)
     {
-        LOG(INFO) << "startRoutine enter, addr = " << std::hex << addr;
+        LOG_MODULE(TRACE) << "startRoutine enter, addr = " << std::hex << addr;
         const auto callAddr = common::toVector(addr);
-		common::UDSMessage startRoutineMsg(canId, { 0x31, 0x01, 0x03, 0x01, callAddr[0], callAddr[1], callAddr[2], callAddr[3] });
-		unsigned long numMsgs;
-        if (channel.writeMsgs(startRoutineMsg, numMsgs) != STATUS_NOERROR || numMsgs < 1) {
-            LOG(ERROR) << "startRoutine failed to write message, addr = " << std::hex << addr;
+        if (!channel.send({canId, {0x31, 0x01, 0x03, 0x01, callAddr[0], callAddr[1], callAddr[2], callAddr[3]}})) {
+            LOG_MODULE(ERROR) << "startRoutine failed to write message, addr = " << std::hex << addr;
             return false;
 		}
 		if (!common::readMessageAndCheck(channel, { 0x71, 0x01, 0x03, 0x01 }, {}, 10)) {
-            LOG(ERROR) << "startRoutine failed to read message, addr = " << std::hex << addr;
+            LOG_MODULE(ERROR) << "startRoutine failed to read message, addr = " << std::hex << addr;
             return false;
 		}
-        LOG(INFO) << "startRoutine completed, addr = " << std::hex << addr;
+        LOG_MODULE(TRACE) << "startRoutine completed, addr = " << std::hex << addr;
         return true;
 	}
 
-    bool UDSProtocolCommonSteps::checkValidApplication(const j2534::J2534Channel& channel, uint32_t canId)
+    bool UDSProtocolCommonSteps::checkValidApplication(ICanChannel& channel, uint32_t canId)
     {
-        LOG(INFO) << "checkValidApplication enter";
+        LOG_MODULE(TRACE) << "checkValidApplication enter";
         UDSRequest checkValidApplicationRequest{ canId, { 0x31, 0x01, 0x03, 0x04 } };
         try {
             checkValidApplicationRequest.process(channel);
         }
         catch(const std::exception& ex) {
-            LOG(ERROR) << "checkValidApplication error, ex = " << ex.what();
+            LOG_MODULE(ERROR) << "checkValidApplication error, ex = " << ex.what();
             return false;
         }
-        LOG(INFO) << "checkValidApplication finshed";
+        LOG_MODULE(TRACE) << "checkValidApplication finshed";
         return true;
     }
 

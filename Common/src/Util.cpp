@@ -1,4 +1,5 @@
 #include "common/Util.hpp"
+#include "common/ICanChannel.hpp"
 
 #include "common/CommonData.hpp"
 #include "common/BusConfiguration.hpp"
@@ -17,6 +18,7 @@
 
 #include <algorithm>
 #include <codecvt>
+#include <cstdlib>
 #include <locale>
 #include <unordered_map>
 #include <fstream>
@@ -293,7 +295,7 @@ namespace common {
         return {};
     }
 
-    bool prepareUDSChannel(const j2534::J2534Channel& channel, uint32_t canId) {
+    bool prepareUDSChannel(j2534::J2534Channel& channel, uint32_t canId) {
         const uint32_t responseCanId = canId + 0x8;
         unsigned long msgId;
         PASSTHRU_MSG maskMsg =
@@ -305,7 +307,7 @@ namespace common {
         return channel.startMsgFilter(FLOW_CONTROL_FILTER, &maskMsg, &patternMsg, &flowMsg, msgId) == STATUS_NOERROR;
     }
 
-    bool prepareTP20Channel(const j2534::J2534Channel& channel, uint32_t canId) {
+    bool prepareTP20Channel(j2534::J2534Channel& channel, uint32_t canId) {
         unsigned long msgId;
         PASSTHRU_MSG maskMsg =
             makePassThruMsg(channel.getProtocolId(), channel.getTxFlags(), { 0xFF, 0xFF, 0xFF, 0xFF });
@@ -411,35 +413,32 @@ namespace common {
     }
 
     static bool readCheckAndGetImpl(
-        const j2534::J2534Channel& channel,
+        ICanChannel& channel,
         const std::vector<uint8_t> msgId,
         const std::vector<uint8_t>& toCheck,
         std::vector<uint8_t>& result,
         size_t retryCount) {
         for (size_t i = 0; i < retryCount; ++i) {
-            std::vector<PASSTHRU_MSG> read_msgs;
-            read_msgs.resize(1);
-            if (channel.readMsgs(read_msgs, 10000) != STATUS_NOERROR || read_msgs.empty())
-            {
+            CanFrame frame;
+            if (!channel.receive(frame, 10000)) {
                 continue;
             }
-            const auto& msg = read_msgs[0];
-            if (msg.DataSize < msgId.size() + 4) {
+            if (frame.data.size() < msgId.size()) {
                 continue;
             }
-            uint32_t checkOffset = 4;
-            const auto areMessagesEqual = std::equal(msgId.cbegin(), msgId.cend(), msg.Data + checkOffset);
+            size_t checkOffset = 0;
+            const auto areMessagesEqual = std::equal(msgId.cbegin(), msgId.cend(), frame.data.cbegin() + checkOffset);
             if (!areMessagesEqual) {
                 continue;
             }
             checkOffset += msgId.size();
-            const auto areResultEqual = std::equal(toCheck.cbegin(), toCheck.cend(), msg.Data + checkOffset);
+            const auto areResultEqual = std::equal(toCheck.cbegin(), toCheck.cend(), frame.data.cbegin() + checkOffset);
             if (!areResultEqual) {
                 return false;
             }
             else {
                 checkOffset += toCheck.size();
-                result.insert(result.end(), msg.Data + checkOffset, msg.Data + msg.DataSize);
+                result.insert(result.end(), frame.data.cbegin() + checkOffset, frame.data.cend());
                 return true;
             }
         }
@@ -447,7 +446,7 @@ namespace common {
     }
 
     std::vector<uint8_t> readMessageCheckAndGet(
-        const j2534::J2534Channel& channel,
+        ICanChannel& channel,
         const std::vector<uint8_t> msgId,
         const std::vector<uint8_t>& toCheck,
         size_t retryCount) {
@@ -457,7 +456,7 @@ namespace common {
     }
 
     bool readMessageAndCheck(
-        const j2534::J2534Channel& channel,
+        ICanChannel& channel,
         const std::vector<uint8_t> msgId,
         const std::vector<uint8_t>& toCheck,
         size_t retryCount)
@@ -606,7 +605,7 @@ namespace common {
     }
 
     size_t getChannelIndexByEcuId(CarPlatform carPlatform, uint32_t ecuId,
-        const std::vector<std::unique_ptr<j2534::J2534Channel>>& channels)
+        const std::vector<std::unique_ptr<ICanChannel>>& channels)
     {
         const auto [busInfo, ecuInfo] = getEcuInfoByEcuId(carPlatform, ecuId);
         for(size_t i = 0; i < channels.size(); ++i) {
@@ -617,8 +616,8 @@ namespace common {
         throw std::runtime_error((std::stringstream() << "Can'f find opened channel with baudrate = " << busInfo.baudrate).str());
     }
 
-    j2534::J2534Channel& getChannelByEcuId(CarPlatform carPlatform, uint32_t ecuId,
-        const std::vector<std::unique_ptr<j2534::J2534Channel>>& channels)
+    ICanChannel& getChannelByEcuId(CarPlatform carPlatform, uint32_t ecuId,
+        const std::vector<std::unique_ptr<ICanChannel>>& channels)
     {
         return *channels[getChannelIndexByEcuId(carPlatform, ecuId, channels)];
     }
@@ -778,13 +777,60 @@ namespace common {
         return { (pin >> 32) & 0xFF, (pin >> 24) & 0xFF, (pin >> 16) & 0xFF, (pin >> 8) & 0xFF, pin & 0xFF };
     }
 
-    void initLogger(const std::string& logFilename)
+    void initLogger(const std::string& logFilename, bool enableConsole, bool debugMode)
     {
         el::Configurations defaultConf;
         defaultConf.setToDefault();
-        defaultConf.setGlobally(el::ConfigurationType::Format, "%datetime %level %msg");
+        defaultConf.setGlobally(el::ConfigurationType::Format, "%datetime %level %fbase:%line %msg");
         defaultConf.setGlobally(el::ConfigurationType::Filename, logFilename);
+        defaultConf.setGlobally(el::ConfigurationType::MaxLogFileSize, "10485760");
+        defaultConf.setGlobally(el::ConfigurationType::LogFlushThreshold, "1");
+
+#ifdef _DEBUG
+        enableConsole = true;
+        debugMode = true;
+#endif
+
+        if (enableConsole) {
+            defaultConf.setGlobally(el::ConfigurationType::ToStandardOutput, "true");
+        }
+
+        if (!debugMode) {
+            defaultConf.setGlobally(el::ConfigurationType::Enabled, "false");
+            defaultConf.set(el::Level::Global, el::ConfigurationType::Enabled, "true");
+            defaultConf.set(el::Level::Info, el::ConfigurationType::Enabled, "true");
+            defaultConf.set(el::Level::Warning, el::ConfigurationType::Enabled, "true");
+            defaultConf.set(el::Level::Error, el::ConfigurationType::Enabled, "true");
+            defaultConf.set(el::Level::Fatal, el::ConfigurationType::Enabled, "true");
+        }
+
         el::Loggers::reconfigureAllLoggers(defaultConf);
+
+        for (const auto& name : {"common", "flasher", "logger"}) {
+            el::Loggers::getLogger(name);
+            el::Loggers::reconfigureLogger(name, defaultConf);
+        }
+
+        const char* debugEnv = std::getenv("VOLVOLOG_DEBUG");
+        if (debugEnv != nullptr && debugEnv[0] != '\0') {
+            std::string env(debugEnv);
+            size_t start = 0;
+            while (start < env.size()) {
+                auto end = env.find(',', start);
+                if (end == std::string::npos)
+                    end = env.size();
+                auto module = env.substr(start, end - start);
+                module.erase(0, module.find_first_not_of(" \t"));
+                module.erase(module.find_last_not_of(" \t") + 1);
+                if (!module.empty()) {
+                    el::Configurations modConf;
+                    modConf.set(el::Level::Debug, el::ConfigurationType::Enabled, "true");
+                    modConf.set(el::Level::Trace, el::ConfigurationType::Enabled, "true");
+                    el::Loggers::reconfigureLogger(module, modConf);
+                }
+                start = end + 1;
+            }
+        }
     }
 
     uint16_t crc16(const uint8_t* data_p, size_t length)

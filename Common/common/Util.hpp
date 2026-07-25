@@ -1,13 +1,16 @@
 #pragma once
 
+#include "DeviceInfo.hpp"
+#include "CarPlatform.hpp"
+#include "ConfigurationInfo.hpp"
+
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
+#include <type_traits>
 
-#include "DeviceInfo.hpp"
-#include "CarPlatform.hpp"
-#include "ConfigurationInfo.hpp"
+class ICanChannel;
 
 namespace j2534 {
     class J2534;
@@ -48,8 +51,8 @@ namespace common {
     std::unique_ptr<j2534::J2534Channel>
         openUDSChannel(j2534::J2534& j2534, unsigned long Baudrate, uint32_t canId = 0);
 
-    bool prepareUDSChannel(const j2534::J2534Channel& channel, uint32_t canId);
-    bool prepareTP20Channel(const j2534::J2534Channel& channel, uint32_t canId);
+    bool prepareUDSChannel(j2534::J2534Channel& channel, uint32_t canId);
+    bool prepareTP20Channel(j2534::J2534Channel& channel, uint32_t canId);
 
     std::unique_ptr<j2534::J2534Channel>
     openTP20Channel(j2534::J2534& j2534, unsigned long Baudrate, uint32_t canId = 0);
@@ -60,13 +63,13 @@ namespace common {
     std::unique_ptr<j2534::J2534Channel> openBridgeChannel(j2534::J2534& j2534);
 
     std::vector<uint8_t> readMessageCheckAndGet(
-        const j2534::J2534Channel& channel,
+        ICanChannel& channel,
         const std::vector<uint8_t> msgId,
         const std::vector<uint8_t>& toCheck,
         size_t retryCount = 10);
 
     bool readMessageAndCheck(
-        const j2534::J2534Channel& channel,
+        ICanChannel& channel,
         const std::vector<uint8_t> msgId,
         const std::vector<uint8_t>& toCheck,
         size_t retryCount = 10);
@@ -79,11 +82,11 @@ namespace common {
 
     std::tuple<BusConfiguration, ECUInfo> getEcuInfoByEcuId(CarPlatform carPlatform, uint32_t ecuId);
 
-    j2534::J2534Channel& getChannelByEcuId(CarPlatform carPlatform, uint32_t ecuId,
-                                           const std::vector<std::unique_ptr<j2534::J2534Channel>>& channels);
+    ICanChannel& getChannelByEcuId(CarPlatform carPlatform, uint32_t ecuId,
+                                   const std::vector<std::unique_ptr<ICanChannel>>& channels);
 
     size_t getChannelIndexByEcuId(CarPlatform carPlatform, uint32_t ecuId,
-                                  const std::vector<std::unique_ptr<j2534::J2534Channel>>& channels);
+                                  const std::vector<std::unique_ptr<ICanChannel>>& channels);
 
     std::vector<ConfigurationInfo> loadConfiguration(std::istream& input);
     std::vector<ConfigurationInfo> loadConfiguration(const std::string& input);
@@ -96,7 +99,7 @@ namespace common {
 
     std::array<uint8_t, 5> getPinArray(uint64_t pin);
 
-    void initLogger(const std::string& logFilename);
+    void initLogger(const std::string& logFilename, bool enableConsole = false, bool debugMode = false);
 
     uint16_t crc16(const uint8_t* data_p, size_t length);
 

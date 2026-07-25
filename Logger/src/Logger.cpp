@@ -3,16 +3,20 @@
 #include "logger/LoggerCallback.hpp"
 
 #include <common/CommonData.hpp>
+#include <common/ICanChannel.hpp>
+#include <common/protocols/D2ECUType.hpp>
 #include <common/protocols/D2Request.hpp>
 #include <common/protocols/D2Message.hpp>
 #include <common/protocols/D2Messages.hpp>
 #include <common/protocols/UDSRequest.hpp>
 #include <common/protocols/UDSProtocolCommonSteps.hpp>
 #include <common/Util.hpp>
+#include <common/utility.hpp>
 #include <j2534/J2534.hpp>
 #include <j2534/J2534Channel.hpp>
 
-#include <easylogging++.h>
+#define LOG_MODULE_NAME "logger"
+#include <common/LogHelper.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -36,10 +40,10 @@ namespace logger {
 	public:
         LoggerImpl() {}
 
-		virtual void registerParameters(j2534::J2534Channel& channel,
+		virtual void registerParameters(common::ICanChannel& channel,
 			const LogParameters& parameters) = 0;
 		virtual std::vector<uint32_t>
-			requestMemory(j2534::J2534Channel& channel,
+			requestMemory(common::ICanChannel& channel,
 				const LogParameters& parameters) = 0;
 	};
 
@@ -48,19 +52,7 @@ namespace logger {
         D2LoggerImpl() : LoggerImpl() {}
 
 	private:
-        const common::D2Message requstMemoryMessage{
-            common::D2Messages::requestMemory};
-
-		unsigned long getNumberOfCanMessages(const LogParameters& parameters) const {
-			double totalDataLength =
-				std::accumulate(parameters.parameters().cbegin(), parameters.parameters().cend(), static_cast<size_t>(0),
-					[](size_t prevValue, const auto& param) {
-						return prevValue + param.size();
-					});
-			return static_cast<unsigned long>(std::ceil((totalDataLength - 3) / 7)) + 1;
-		}
-
-		virtual void registerParameters(j2534::J2534Channel& channel,
+		virtual void registerParameters(common::ICanChannel& channel,
 			const LogParameters& parameters) override {
             common::D2Request unregisterRequest{common::D2Messages::unregisterAllMemoryRequest};
             unregisterRequest.process(channel);
@@ -72,44 +64,31 @@ namespace logger {
 			}
 		}
 
-		virtual std::vector<uint32_t>
-			requestMemory(j2534::J2534Channel& channel,
-				const LogParameters& parameters) override {
-			const auto numberOfCanMessages = getNumberOfCanMessages(parameters);
-			std::vector<uint32_t> result;
-			unsigned long writtenCount = 1;
-			channel.writeMsgs(requstMemoryMessage, writtenCount);
-			if (writtenCount > 0) {
-				std::vector<PASSTHRU_MSG> logMessages(numberOfCanMessages);
-				channel.readMsgs(logMessages);
+		virtual std::vector<uint32_t> requestMemory(
+            common::ICanChannel& channel,
+			const LogParameters& parameters) override
+        {
+            common::D2Request requestMemory{ common::D2Messages::requestMemory };
+            auto data { requestMemory.process(channel) };
 
-				result.reserve(parameters.parameters().size());
-
-				size_t paramIndex = 0;
-				size_t paramOffset = 0;
-				uint16_t value = 0;
-				for (const auto& msg : logMessages) {
-					size_t msgOffset = 5;
-					// E6 F0 00 - read record by identifier answer
-					if (msg.Data[4] == 0x8F &&
-						msg.Data[5] == static_cast<uint8_t>(common::ECUType::ECM_ME) &&
-						msg.Data[6] == 0xE6 && msg.Data[7] == 0xF0 && msg.Data[8] == 0)
-						msgOffset = 9;
-					for (size_t i = msgOffset; i < 12; ++i) {
-						const auto& param = parameters.parameters()[paramIndex];
-						value += msg.Data[i] << ((param.size() - paramOffset - 1) * 8);
-						++paramOffset;
-						if (paramOffset >= param.size()) {
-							result.push_back(value);
-							++paramIndex;
-							paramOffset = 0;
-							value = 0;
-						}
-						if (paramIndex >= parameters.parameters().size())
-							break;
-					}
-				}
-			}
+            std::vector<uint32_t> result(parameters.parameters().size());
+            size_t paramIndex = 0;
+            size_t paramOffset = 0;
+            uint32_t value = 0;
+            for(size_t i = 0; i < data.size(); ++i) {
+                const auto& param = parameters.parameters()[paramIndex];
+                value += data[i] << ((param.size() - paramOffset - 1) * 8);
+                ++paramOffset;
+                if (paramOffset >= param.size()) {
+                    result[paramIndex] = value;
+                    ++paramIndex;
+                    paramOffset = 0;
+                    value = 0;
+                }
+                if (paramIndex >= result.size()) {
+                    break;
+                }
+            }
 			return result;
 		}
 	};
@@ -119,19 +98,19 @@ namespace logger {
         AW55D2LoggerImpl() : LoggerImpl() {}
 
     private:
-        virtual void registerParameters(j2534::J2534Channel&, const LogParameters&) override
+        virtual void registerParameters(common::ICanChannel&, const LogParameters&) override
         {
         }
 
         virtual std::vector<uint32_t>
-        requestMemory(j2534::J2534Channel& channel,
+        requestMemory(common::ICanChannel& channel,
                       const LogParameters& parameters) override
         {
             std::vector<uint32_t> result(parameters.parameters().size());
             for (size_t i = 0; i < parameters.parameters().size(); ++i) {
                 common::D2Request readMemoryRequest{
                     common::D2Messages::createReadDataByOffsetMsg(
-                    static_cast<uint8_t>(common::ECUType::TCM), parameters.parameters()[i].addr(),
+                    static_cast<uint8_t>(common::D2ECUType::TCM), parameters.parameters()[i].addr(),
                         static_cast<uint8_t>(parameters.parameters()[i].size())) };
 
                 auto readResponse{ readMemoryRequest.process(channel) };
@@ -146,12 +125,12 @@ namespace logger {
         TF80D2LoggerImpl() : LoggerImpl() {}
 
     private:
-        virtual void registerParameters(j2534::J2534Channel&, const LogParameters&) override
+        virtual void registerParameters(common::ICanChannel&, const LogParameters&) override
         {
         }
 
         virtual std::vector<uint32_t>
-        requestMemory(j2534::J2534Channel& channel,
+        requestMemory(common::ICanChannel& channel,
                       const LogParameters& parameters) override
         {
             std::vector<uint32_t> result(parameters.parameters().size());
@@ -198,7 +177,7 @@ namespace logger {
         }
 
 		virtual void
-			registerParameters(j2534::J2534Channel& channel,
+			registerParameters(common::ICanChannel& channel,
 				const LogParameters& parameters) override {
 
             common::UDSRequest diagSessionRequest{_canId, { 0x10, 0x03 }};
@@ -238,10 +217,9 @@ namespace logger {
 		}
 
 		virtual std::vector<uint32_t>
-			requestMemory(j2534::J2534Channel& channel,
+			requestMemory(common::ICanChannel& channel,
 				const LogParameters& parameters) override {
             std::vector<uint32_t> result(parameters.parameters().size());
-			size_t paramIndex = 0;
 			size_t paramOffset = 0;
 			uint32_t value = 0;
             for (const auto& didRequest: _didRequests) {
@@ -299,7 +277,7 @@ namespace logger {
     private:
 
         virtual void
-        registerParameters(j2534::J2534Channel& channel,
+        registerParameters(common::ICanChannel& channel,
                            const LogParameters& parameters) override {
 
             common::UDSRequest diagSessionRequest{_canId, { 0x10, 0x03 }};
@@ -309,7 +287,7 @@ namespace logger {
         }
 
         virtual std::vector<uint32_t>
-        requestMemory(j2534::J2534Channel& channel,
+        requestMemory(common::ICanChannel& channel,
                       const LogParameters& parameters) override {
             std::vector<uint32_t> result;
             constexpr uint8_t addrLength = 4;
@@ -340,7 +318,7 @@ namespace logger {
                     }
                 }
                 catch(const std::exception& ex) {
-                    LOG(ERROR) << ex.what();
+                    LOG_MODULE(ERROR) << ex.what();
                 }
                 catch(...) {
                 }
@@ -354,13 +332,15 @@ namespace logger {
     std::unique_ptr<LoggerImpl> createLoggerImpl(common::CarPlatform carPlatform, uint32_t cmId, const std::string& cmInfo)
 	{
 		using common::CarPlatform;
-		if (cmId == 0x7A && (carPlatform == CarPlatform::P80 || carPlatform == CarPlatform::P1
+        if (cmId == to_underlying(common::D2ECUType::ECM_ME)
+            && (carPlatform == CarPlatform::P80 || carPlatform == CarPlatform::P1
 			|| carPlatform == CarPlatform::P2 || carPlatform == CarPlatform::P2_250)) {
             return std::make_unique<D2LoggerImpl>();
 		}
-        if (cmId == 0x6E && (carPlatform == CarPlatform::P80 || carPlatform == CarPlatform::P2
+        if (cmId == to_underlying(common::D2ECUType::TCM)
+            && (carPlatform == CarPlatform::P80 || carPlatform == CarPlatform::P2
 			|| carPlatform == CarPlatform::P2_250)) {
-			if (common::toLower(cmInfo) == "aw55") {
+            if (common::toLower(cmInfo) == "aw55_p2") {
                 return std::make_unique<AW55D2LoggerImpl>();
 			}
             else if (common::toLower(cmInfo) == "tf80_p2") {
@@ -460,7 +440,8 @@ namespace logger {
 	}
 
 	void Logger::logFunction() {
-		{
+        LOG_SCOPE_DURATION(Logger_logFunction);
+        {
 			std::unique_lock<std::mutex> lock{ _callbackMutex };
 			for (const auto callback : _callbacks) {
 				callback->onStatusChanged(true);

@@ -2,23 +2,28 @@
 #include <common/compression/CompressorFactory.hpp>
 #include <common/encryption/EncryptorFactory.hpp>
 #include <common/encryption/XOREncryptor.hpp>
+#include <common/protocols/D2ECUType.hpp>
 #include <common/protocols/D2Messages.hpp>
 #include <common/protocols/TP20RequestProcessor.hpp>
 #include <common/protocols/TP20Session.hpp>
 #include <common/protocols/UDSProtocolCommonSteps.hpp>
 #include <common/protocols/UDSPinFinder.hpp>
 #include <common/protocols/UDSRequest.hpp>
+#include <common/CanAlarmClock.hpp>
 #include <common/CommonData.hpp>
 #include <common/VBFParser.hpp>
 #include <common/VBFUtil.hpp>
 #include <common/SBL.hpp>
 #include <common/Util.hpp>
+#include <common/utility.hpp>
 
 #include <j2534/J2534.hpp>
 #include <j2534/J2534Channel.hpp>
 
 #include <flasher/D2Flasher.hpp>
-#include <flasher/D2Reader.hpp>
+#include <flasher/ReaderBase.hpp>
+#include <flasher/ReaderFactory.hpp>
+#include <flasher/ReaderParametersProviderBase.hpp>
 #include <flasher/SBLProviderVBF.hpp>
 #include <flasher/SBLProviderCommon.hpp>
 #include <flasher/UDSFlasher.hpp>
@@ -26,7 +31,8 @@
 
 #include <argparse/argparse.hpp>
 
-#include <easylogging++.h>
+#define LOG_MODULE_NAME "flasher"
+#include <common/LogHelper.hpp>
 
 #include <algorithm>
 #include <cstdlib>
@@ -55,13 +61,14 @@ enum class RunMode
 bool getRunOptions(int argc, const char* argv[], std::string& deviceName,
 	unsigned long& baudrate, std::string& flashPath, uint64_t& pin,
 	uint8_t& ecuId, unsigned long& start, unsigned long& datasize,
-	RunMode& runMode, std::string& sblPath, common::CarPlatform& carPlatform, bool& pinUpward) {
+	RunMode& runMode, std::string& sblPath, common::CarPlatform& carPlatform, bool& pinUpward, bool& verbose) {
 	argparse::ArgumentParser program("VolvoFlasher", "1.0", argparse::default_arguments::help);
 	program.add_argument("-d", "--device").default_value(std::string{}).help("Device name");
 	program.add_argument("-b", "--baudrate").scan<'u', unsigned long>().default_value(500000u).help("CAN bus speed");
 	program.add_argument("-f", "--platform").default_value(std::string{ "P2" }).help("Car's platform, supported values: P80, P1, P1_UDS, P2, P2_250, P2_UDS, P3, SPA");
 	program.add_argument("-e", "--ecu").scan<'x', uint8_t>().default_value(0x7A).help("ECU id");
 	program.add_argument("-p", "--pin").scan<'x', uint64_t>().default_value(static_cast<uint64_t>(0)).help("PIN to unlock ECU");
+	program.add_argument("-v", "--verbose").default_value(false).implicit_value(true).nargs(0).help("Enable verbose (debug) logging");
 
 	argparse::ArgumentParser flash_command("flash", "1.0", argparse::default_arguments::help);
 	flash_command.add_description("Flash BIN to ECU");
@@ -121,6 +128,7 @@ bool getRunOptions(int argc, const char* argv[], std::string& deviceName,
 		ecuId = program.get<uint8_t>("-e");
 		carPlatform = common::parseCarPlatform(program.get<std::string>("-f"));
 		pin = program.get<uint64_t>("-p");
+		verbose = program.get<bool>("-v");
 		return true;
 	}
 	catch (const std::exception& err) {
@@ -256,19 +264,6 @@ public:
     }
 };
 
-void writeBinToFile(const std::vector<uint8_t>& bin, const std::string& path) {
-	std::fstream out(path, std::ios::out | std::ios::binary);
-	const auto msgs =
-		common::D2Messages::createWriteDataMsgs(static_cast<uint8_t>(common::ECUType::ECM_ME), bin);
-	for (const auto& msg : msgs) {
-		auto passThruMsgs = msg.toPassThruMsgs(123, 456);
-		for (const auto& msg : passThruMsgs) {
-			for (size_t i = 0; i < msg.DataSize; ++i)
-				out << msg.Data[i];
-		}
-	}
-}
-
 uint32_t ford_seed(uint32_t seed, uint8_t* key)
 {
 	uint8_t sa[8];
@@ -403,6 +398,7 @@ std::vector<PASSTHRU_MSG> readMessages(j2534::J2534Channel& channel, size_t mess
 	if (channel.readMsgs(read_msgs, 5000) != STATUS_NOERROR || read_msgs.empty())
 	{
 		std::cout << "Can't read message" << std::endl;
+		LOG_MODULE(ERROR) << "Can't read message";
 		return {};
 	}
 	return read_msgs;
@@ -425,6 +421,7 @@ bool authByKey(j2534::J2534Channel& channel, unsigned long protocolId, const std
 	if (!success)
 	{
 		std::cout << "Can't request seed" << std::endl;
+		LOG_MODULE(ERROR) << "Can't request seed";
 		return false;
 	}
 	std::vector<PASSTHRU_MSG> read_msgs;
@@ -432,6 +429,7 @@ bool authByKey(j2534::J2534Channel& channel, unsigned long protocolId, const std
 	if (channel.readMsgs(read_msgs, 5000) != STATUS_NOERROR || read_msgs.empty())
 	{
 		std::cout << "Can't read seed" << std::endl;
+		LOG_MODULE(ERROR) << "Can't read seed";
 		return false;
 	}
 	uint8_t seed[3] = { read_msgs[0].Data[7], read_msgs[0].Data[8], read_msgs[0].Data[9] };
@@ -441,12 +439,14 @@ bool authByKey(j2534::J2534Channel& channel, unsigned long protocolId, const std
 	if (sendMessage(channel, protocolId, { 0x07, 0xE0, 5, 0x27, 0x02, key[0], key[1], key[2] }) != STATUS_NOERROR)
 	{
 		std::cout << "Can't write key" << std::endl;
+		LOG_MODULE(ERROR) << "Can't write key";
 		return false;
 	}
 	read_msgs.resize(1);
 	if (channel.readMsgs(read_msgs) != STATUS_NOERROR || read_msgs.empty())
 	{
 		std::cout << "Can't read key result" << std::endl;
+		LOG_MODULE(ERROR) << "Can't read key result";
 		return false;
 	}
 	const auto& answer_data = read_msgs[0].Data;
@@ -481,6 +481,7 @@ void findPin(j2534::J2534& j2534, uint64_t i = 0)
 	if (channel.startPeriodicMsg(msg, msg_id, 5) != STATUS_NOERROR)
 	{
 		std::cout << "Can't start prog periodic message" << std::endl;
+		LOG_MODULE(ERROR) << "Can't start prog periodic message";
 		return;
 	}
 	std::this_thread::sleep_for(std::chrono::seconds(4));
@@ -499,6 +500,7 @@ void findPin(j2534::J2534& j2534, uint64_t i = 0)
 	if (channel.startPeriodicMsg(msg, msg_id, 1900) != STATUS_NOERROR)
 	{
 		std::cout << "Can't start keep alive periodic message" << std::endl;
+		LOG_MODULE(ERROR) << "Can't start keep alive periodic message";
 		return;
 	}
 	for (; i <= 0xFFFFFF; ++i)
@@ -587,6 +589,7 @@ bool switchToDiagSession(j2534::J2534Channel& channel, unsigned long protocolId,
 	if (channel.startPeriodicMsg(msg, msg_id, 5) != STATUS_NOERROR)
 	{
 		std::cout << "Can't start prog periodic message" << std::endl;
+		LOG_MODULE(ERROR) << "Can't start prog periodic message";
 		return false;
 	}
 	std::this_thread::sleep_for(std::chrono::seconds(4));
@@ -606,6 +609,7 @@ bool switchToDiagSession(j2534::J2534Channel& channel, unsigned long protocolId,
 	if (channel.startPeriodicMsg(msg, msg_id, 1900) != STATUS_NOERROR)
 	{
 		std::cout << "Can't start keep alive periodic message" << std::endl;
+		LOG_MODULE(ERROR) << "Can't start keep alive periodic message";
 		return false;
 	}
 
@@ -653,18 +657,11 @@ void doSomeStuff(std::unique_ptr<j2534::J2534> j2534, uint64_t pin)
 	//	return;
 	//}
 //    common::TP20RequestProcessor requestProcessor{session};
-	flasher::FlasherParameters flasherParameters{
-		carPlatform,
-		ecuId,
-		"",
-        nullptr,
-        flashVbf,
-        common::CompressorFactory::create(common::CompressionType::Bosch),
-        common::EncryptorFactory::create(common::EncryptionType::XOR, {{"key", "CodeRobert"}})
-	};
-	flasher::KWPFlasherParameters kwpFlasherParameters{
-		{ (pin >> 32) & 0xFF, (pin >> 24) & 0xFF, (pin >> 16) & 0xFF, (pin >> 8) & 0xFF, pin & 0xFF } };
-    flasher::KWPFlasher flasher{ *j2534, std::move(flasherParameters), std::move(kwpFlasherParameters) };
+    std::array<uint8_t, 5> pinArray = {
+        (pin >> 32) & 0xFF, (pin >> 24) & 0xFF, (pin >> 16) & 0xFF, (pin >> 8) & 0xFF, pin & 0xFF };
+    flasher::KWPFlasherConfig config{
+        {}, pinArray, flashVbf, common::CompressionType::Bosch };
+    flasher::KWPFlasher flasher{ *j2534, carPlatform, ecuId, std::move(config) };
 	FlasherCallback callback;
 	flasher.registerCallback(callback);
 	flasher.start();
@@ -702,16 +699,10 @@ void UDSFlash(common::CarPlatform carPlatform, uint8_t ecuId,
 	const common::VBF flash{ vbfParser.parse(flashVbf) };
     const auto ecuInfo{ common::getEcuInfoByEcuId(carPlatform, ecuId) };
 
-	flasher::FlasherParameters flasherParameters{
-		carPlatform,
-		ecuId,
-		"",
-        std::make_unique<flasher::SBLProviderVBF>(bootloader),
-        flash
-	};
-	flasher::UDSFlasherParameters udsFlasherParameters{
-        { (pin >> 32) & 0xFF, (pin >> 24) & 0xFF, (pin >> 16) & 0xFF, (pin >> 8) & 0xFF, pin & 0xFF }};
-    flasher::UDSFlasher flasher{ *j2534, std::move(flasherParameters), std::move(udsFlasherParameters) };
+    std::array<uint8_t, 5> pinArray = {
+        (pin >> 32) & 0xFF, (pin >> 24) & 0xFF, (pin >> 16) & 0xFF, (pin >> 8) & 0xFF, pin & 0xFF };
+    flasher::UDSFlasherConfig config{ pinArray, bootloader, flash };
+    flasher::UDSFlasher flasher{ *j2534, carPlatform, ecuId, std::move(config) };
 	FlasherCallback callback;
 	flasher.registerCallback(callback);
 	flasher.start();
@@ -730,9 +721,8 @@ void UDSFlash(common::CarPlatform carPlatform, uint8_t ecuId,
 		<< std::endl;
 }
 
-common::VBF vbfForFlasher(const std::vector<uint8_t>& input, common::CMType cmType)
+common::VBF vbfForFlasher(const std::vector<uint8_t>& input)
 {
-    (void)cmType;
     return common::VBF({}, { { 0x0, input } });
 }
 
@@ -742,21 +732,13 @@ void D2Flash(const std::string& flashPath, std::unique_ptr<j2534::J2534> j2534, 
 		std::ios_base::binary | std::ios_base::in);
 	std::vector<uint8_t> bin{ std::istreambuf_iterator<char>(input), {} };
 
-    const common::CMType cmType = bin.size() == 2048 * 1024
-                                      ? common::CMType::ECM_ME9_P1
-                                      : common::CMType::ECM_ME7;
-
-    const auto vbf = vbfForFlasher(bin, cmType);
+    const auto vbf = vbfForFlasher(bin);
 	const auto carPlatform = baudrate == 500000 ? common::CarPlatform::P2 : common::CarPlatform::P2_250;
 
-	flasher::FlasherParameters flasherParameters{
-		carPlatform,
-		0x7A,
-		"",
-        std::make_unique<flasher::SBLProviderCommon>(),
-        vbf
-	};
-    flasher::D2Flasher flasher(*j2534, std::move(flasherParameters));
+    const uint32_t ecuId = to_underlying(common::D2ECUType::ECM_ME);
+	flasher::SBLProviderCommon sblProviderCommon;
+    flasher::D2FlasherConfig config{ sblProviderCommon.getSBL(carPlatform, ecuId, ""), vbf };
+    flasher::D2Flasher flasher(*j2534, carPlatform, ecuId, std::move(config));
 	FlasherCallback callback;
 	flasher.registerCallback(callback);
     flasher.start();
@@ -800,25 +782,30 @@ void fill_crc_map()
 
 void readFlash(std::unique_ptr<j2534::J2534> j2534, common::CarPlatform carPlatform, uint8_t ecuId, const std::string& flashPath, unsigned long start, unsigned long datasize)
 {
-	flasher::FlasherParameters flasherParameters{
-		carPlatform,
-		ecuId,
-		"",
-        std::make_unique<flasher::SBLProviderCommon>(),
-        {{}, {}}
-	};
-	std::vector<uint8_t> bin;
-    flasher::D2Reader flasher(*j2534, std::move(flasherParameters), start, datasize, bin);
+    class CLIReaderProvider final : public flasher::ReaderParametersProviderBase {
+    public:
+        CLIReaderProvider(common::CarPlatform platform, uint32_t id,
+                          uint32_t s, size_t sz)
+            : ReaderParametersProviderBase(platform, id, "", std::make_unique<flasher::SBLProviderCommon>())
+            , _range{ s, sz } {}
+        flasher::ReadRanges getReadRanges() const override { return {_range}; }
+    private:
+        flasher::ReadRange _range;
+    };
+
+    auto provider = CLIReaderProvider(carPlatform, ecuId,
+        static_cast<uint32_t>(start), static_cast<size_t>(datasize));
+    auto reader = flasher::ReaderFactory::create(*j2534, provider);
     FlasherCallback callback;
-    flasher.registerCallback(callback);
-    flasher.start();
-    while (flasher.getCurrentState() !=
-               flasher::FlasherState::Done && flasher.getCurrentState() !=
+    reader->registerCallback(callback);
+    reader->start();
+    while (reader->getCurrentState() !=
+               flasher::FlasherState::Done && reader->getCurrentState() !=
                   flasher::FlasherState::Error) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         std::cout << ".";
     }
-    const bool success = flasher.getCurrentState() ==
+    const bool success = reader->getCurrentState() ==
         flasher::FlasherState::Done;
 	std::cout << std::endl
 		<< ((success)
@@ -829,6 +816,7 @@ void readFlash(std::unique_ptr<j2534::J2534> j2534, common::CarPlatform carPlatf
 	{
 		std::fstream output(flashPath,
 			std::ios_base::binary | std::ios_base::out);
+		const auto& bin = reader->buffers()[0];
 		output.write((const char*)bin.data(), bin.size());
 	}
 }
@@ -935,8 +923,12 @@ int main(int argc, const char* argv[]) {
 	uint8_t ecuId = 0;
 	RunMode runMode = RunMode::None;
 	bool scanPinsUpward = true;
+	bool verbose = false;
 	const auto devices = common::getAvailableDevices();
-	if (getRunOptions(argc, argv, deviceName, baudrate, flashPath, pin, ecuId, start, datasize, runMode, sblPath, carPlatform, scanPinsUpward)) {
+	if (getRunOptions(argc, argv, deviceName, baudrate, flashPath, pin, ecuId, start, datasize, runMode, sblPath, carPlatform, scanPinsUpward, verbose)) {
+        if (verbose) {
+            common::initLogger("application.log", true, true);
+        }
 		for (const auto& device : devices) {
 			if (deviceName.empty() ||
 				device.deviceName.find(deviceName) != std::string::npos) {
@@ -949,10 +941,8 @@ int main(int argc, const char* argv[]) {
 						std::make_unique<j2534::J2534>(device.libraryName) };
 					j2534->PassThruOpen(name);
                     if (runMode == RunMode::Wakeup) {
-						// TODO: wake up should be implemented separately.
-						// Need to iterate over D2 and UDS protocols with different BUS speeds for D2 protocol.
-//                        flasher::D2Flasher flasher(std::move(j2534), baudrate, common::CMType::ECM_ME7, {{}, {}});
-//						flasher.canWakeUp(baudrate);
+                        common::CanAlarmClock alarmClock(*j2534);
+                        alarmClock.start();
 					}
 					else if (runMode == RunMode::Pin) {
 						findPin2(*j2534, carPlatform, ecuId, pin, scanPinsUpward);
@@ -973,14 +963,17 @@ int main(int argc, const char* argv[]) {
 						doSomeStuff(std::move(j2534), pin);
 					}
 				}
-				catch (const std::exception& ex) {
-					std::cout << ex.what() << std::endl;
+			catch (const std::exception& ex) {
+				std::cout << ex.what() << std::endl;
+				LOG_MODULE(ERROR) << "Exception: " << ex.what();
 				}
 				catch (const char* ex) {
-					std::cout << ex << std::endl;
+				std::cout << ex << std::endl;
+				LOG_MODULE(ERROR) << "Exception: " << ex;
 				}
 				catch (...) {
-					std::cout << "exception" << std::endl;
+				std::cout << "exception" << std::endl;
+				LOG_MODULE(ERROR) << "Unknown exception";
 				}
 			}
 		}

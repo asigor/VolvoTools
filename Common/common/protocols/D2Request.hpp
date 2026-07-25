@@ -2,11 +2,12 @@
 
 #include "D2Message.hpp"
 
-#include "j2534/J2534Channel.hpp"
-
+#include <cstdint>
 #include <vector>
 
+
 namespace common {
+class ICanChannel;
 
 class D2Request {
 public:
@@ -15,7 +16,7 @@ public:
     explicit D2Request(D2Message&& message);
     explicit D2Request(const D2Message& message);
 
-    std::vector<uint8_t> process(const j2534::J2534Channel& channel, size_t timeout = 1000, size_t sendMessageDelay = 0);
+    std::vector<uint8_t> process(ICanChannel& channel, size_t timeout = 1000, size_t sendMessageDelay = 0);
 
 private:
     D2Message _message;

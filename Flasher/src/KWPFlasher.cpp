@@ -5,7 +5,11 @@
 
 #include <common/protocols/KWPProtocolCommonSteps.hpp>
 #include <common/protocols/TP20RequestProcessor.hpp>
+
+#define LOG_MODULE_NAME "flasher"
+#include <common/LogHelper.hpp>
 #include <common/protocols/UDSRequestProcessor.hpp>
+#include <common/ICanChannel.hpp>
 #include <common/CommonData.hpp>
 #include <common/Util.hpp>
 
@@ -17,14 +21,16 @@ namespace flasher {
     class KWPFlasherImpl {
     public:
         KWPFlasherImpl(common::RequestProcessorBase& requestProcessor,
-                       const FlasherParameters& flasherParameters,
-                       const KWPFlasherParameters& kwpFlasherParameters,
+                       common::CarPlatform carPlatform,
+                       uint32_t ecuId,
+                       const KWPFlasherConfig& config,
                        uint32_t canId,
                        const std::function<void(FlasherState)>& stateUpdater,
                        const std::function<void(size_t)>& progressUpdater)
             : _requestProcessor{ requestProcessor }
-            , _flasherParameters{ flasherParameters }
-            , _kwpFlasherParameters{ kwpFlasherParameters }
+            , _carPlatform{ carPlatform }
+            , _ecuId{ ecuId }
+            , _config{ config }
             , _canId{ canId }
             , _isFailed{ false }
             , _stateUpdater{ stateUpdater }
@@ -34,19 +40,13 @@ namespace flasher {
 
         size_t getMaximumProgress()
         {
-            size_t bootloaderSize{};
-            if (const auto sblProvider = _flasherParameters.sblProvider) {
-                const auto bootloader{ sblProvider->getSBL(
-                    _flasherParameters.carPlatform, _flasherParameters.ecuId, _flasherParameters.additionalData) };
-                bootloaderSize = FlasherBase::getProgressFromVBF(bootloader);
-            }
-            return bootloaderSize  + FlasherBase::getProgressFromVBF(_flasherParameters.flash);
+            return FlasherBase::getProgressFromVBF(_config.bootloader)  + FlasherBase::getProgressFromVBF(_config.flash);
         }
 
         void authorize()
         {
             _stateUpdater(FlasherState::Authorize);
-            if (!common::KWPProtocolCommonSteps::authorize(_requestProcessor, _kwpFlasherParameters.pin)) {
+            if (!common::KWPProtocolCommonSteps::authorize(_requestProcessor, _config.pin)) {
                 setFailed("Authorization failed");
             }
         }
@@ -61,8 +61,8 @@ namespace flasher {
 
         void writeFlash()
         {
-            for (size_t i = 0; i < _flasherParameters.flash.chunks.size(); ++i) {
-                const auto& chunk = _flasherParameters.flash.chunks[i];
+            for (size_t i = 0; i < _config.flash.chunks.size(); ++i) {
+                const auto& chunk = _config.flash.chunks[i];
                 _stateUpdater(FlasherState::RequestDownload);
                 const auto maxDownloadSize{ common::KWPProtocolCommonSteps::requestDownload(_requestProcessor, chunk) };
                 if (!maxDownloadSize) {
@@ -106,14 +106,16 @@ namespace flasher {
     private:
         void setFailed(const std::string& message)
         {
+            LOG_MODULE(ERROR) << message;
             _isFailed = true;
             _errorMessage = message;
         }
 
     private:
         common::RequestProcessorBase& _requestProcessor;
-        const FlasherParameters& _flasherParameters;
-        const KWPFlasherParameters& _kwpFlasherParameters;
+        common::CarPlatform _carPlatform;
+        uint32_t _ecuId;
+        const KWPFlasherConfig& _config;
         const uint32_t _canId;
         bool _isFailed;
         std::string _errorMessage;
@@ -207,9 +209,10 @@ using M = hfsm2::MachineT<hfsm2::Config::ContextT<KWPFlasherImpl&>>;
     };
 
     KWPFlasher::KWPFlasher(j2534::J2534& j2534,
-        FlasherParameters&& flasherParameters, KWPFlasherParameters&& kwpFlasherParameters)
-        : FlasherBase{ j2534, std::move(flasherParameters) }
-        , _kwpFlasherParameters{ std::move(kwpFlasherParameters) }
+        common::CarPlatform carPlatform, uint32_t ecuId,
+        KWPFlasherConfig&& config)
+        : FlasherBase{ j2534, carPlatform, ecuId }
+        , _config{ std::move(config) }
     {
     }
 
@@ -217,12 +220,11 @@ using M = hfsm2::MachineT<hfsm2::Config::ContextT<KWPFlasherImpl&>>;
     {
     }
 
-    void KWPFlasher::startImpl(std::vector<std::unique_ptr<j2534::J2534Channel>>& channels)
+    void KWPFlasher::startImpl(std::vector<std::unique_ptr<common::ICanChannel>>& channels)
     {
-        const auto ecuInfo{ common::getEcuInfoByEcuId(getFlasherParameters().carPlatform,
-            getFlasherParameters().ecuId) };
+        const auto ecuInfo{ common::getEcuInfoByEcuId(_carPlatform, _ecuId) };
 
-        const auto& channel{ common::getChannelByEcuId(getFlasherParameters().carPlatform, getFlasherParameters().ecuId, channels) };
+        auto& channel{ common::getChannelByEcuId(_carPlatform, _ecuId, channels) };
 
         std::unique_ptr<common::TP20Session> tp20Session;
         std::unique_ptr<common::RequestProcessorBase> requestProcessor;
@@ -231,7 +233,7 @@ using M = hfsm2::MachineT<hfsm2::Config::ContextT<KWPFlasherImpl&>>;
             requestProcessor = std::make_unique<common::UDSRequestProcessor>(channel, std::get<1>(ecuInfo).canId);
             break;
         case CAN:
-            tp20Session = std::make_unique<common::TP20Session>(channel, getFlasherParameters().carPlatform, getFlasherParameters().ecuId);
+            tp20Session = std::make_unique<common::TP20Session>(channel, _carPlatform, _ecuId);
             if (!tp20Session->start()) {
                 throw std::runtime_error("Can't start TP20 session");
             }
@@ -241,7 +243,7 @@ using M = hfsm2::MachineT<hfsm2::Config::ContextT<KWPFlasherImpl&>>;
             throw std::runtime_error("Unsupported protocol for KWP flasher");
         }
 
-        KWPFlasherImpl impl(*requestProcessor, getFlasherParameters(), _kwpFlasherParameters,
+        KWPFlasherImpl impl(*requestProcessor, _carPlatform, _ecuId, _config,
             std::get<1>(ecuInfo).canId, [this](FlasherState state) {
             setCurrentState(state);
         },

@@ -1,33 +1,35 @@
 #pragma once
 
-#include "FlasherCallback.hpp"
-
 #include "FlasherBase.hpp"
+#include "FlasherConfigs.hpp"
 
 #include <common/GenericProcess.hpp>
-#include <common/CMType.hpp>
-#include <common/protocols/D2Messages.hpp>
 #include <common/VBF.hpp>
+
+namespace common {
+class ICanChannel;
+} // namespace common
 
 namespace flasher {
 
 class D2FlasherBase: public FlasherBase {
 public:
-    explicit D2FlasherBase(j2534::J2534 &j2534, FlasherParameters&& flasherParameters);
+    D2FlasherBase(j2534::J2534 &j2534, common::CarPlatform carPlatform, uint32_t ecuId,
+                  D2FlasherConfig&& config);
     ~D2FlasherBase();
 
-    void canWakeUp(unsigned long baudrate);
-
 protected:
-    void startImpl(std::vector<std::unique_ptr<j2534::J2534Channel>>& channels) override final;
+    void startImpl(std::vector<std::unique_ptr<common::ICanChannel>>& channels) override final;
 
     virtual size_t getMaximumFlashProgress() const = 0;
     virtual bool isBootloaderRequired() const = 0;
-    virtual void eraseStep(j2534::J2534Channel &channel, uint8_t ecuId) = 0;
-    virtual void writeStep(j2534::J2534Channel &channel, uint8_t ecuId) = 0;
+    virtual void eraseStep(common::ICanChannel &channel, uint8_t ecuId) = 0;
+    virtual void writeStep(common::ICanChannel &channel, uint8_t ecuId) = 0;
 
-  void canWakeUp();
-  void cleanErrors();
+    const D2FlasherConfig& getConfig() const { return _config; }
+
+private:
+    D2FlasherConfig _config;
 };
 
 } // namespace flasher
