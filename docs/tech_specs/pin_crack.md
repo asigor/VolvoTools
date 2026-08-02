@@ -157,7 +157,7 @@ public:
                std::unique_ptr<PinCrackerSteps> steps,
                Direction direction, uint64_t startPin,
                std::function<void(State, uint64_t)> stateCallback,
-               std::shared_ptr<PinCrackerStorage> storage = {});
+               PinCrackerStorage& storage);
     ~PinCracker();
 
     // Non-copyable
@@ -175,7 +175,7 @@ private:
 
     J2534ChannelProvider _channelProvider;
     std::unique_ptr<PinCrackerSteps> _steps;
-    std::shared_ptr<PinCrackerStorage> _storage;
+    PinCrackerStorage& _storage;
     std::thread _thread;
 
     Direction _direction;
@@ -209,15 +209,15 @@ step = (_direction == Up) ? 1 : -1
 
 while pin <= endPin && pin >= endPin && !_stop:
     // Пропустить уже проверенные ПИНы
-    while !_stop && _storage && _storage->isChecked(pin):
+    while !_stop && _storage.isChecked(pin):
         pin += step
 
     setState(Work, pin)
     if _steps->tryPin(*channels[0], pin):
         _foundPin = pin
-        _storage->markChecked(pin)     // отметить найденный
+        _storage.markChecked(pin)     // отметить найденный
         break
-    _storage->markChecked(pin)         // отметить неудачный
+    _storage.markChecked(pin)         // отметить неудачный
     pin += step
     sleep(_steps->getRetryDelay())
 
@@ -226,7 +226,7 @@ _steps->stopKeepAlive(keepAliveIds)
 setState(PostAuth)
 _steps->postAuth(channels)
 
-_storage->flush()                      // сохранить состояние
+_storage.flush()                      // сохранить состояние
 
 setState(_foundPin ? Done : Error)
 ```
@@ -306,18 +306,20 @@ public:
 
 ### 3.7. Фабрика PinCracker
 
+Фабрика не зависит от J2534 — она принимает уже открытые каналы (`ICanChannel`). Открытие каналов — ответственность вызывающего (через `J2534ChannelProvider` или любой другой `ICanChannel`-провайдер).
+
 ```cpp
 // Flasher/flasher/pin/PinCrackerFactory.hpp
 namespace flasher {
 
 std::unique_ptr<PinCracker> createPinCracker(
-    j2534::J2534& j2534,
+    std::vector<std::unique_ptr<common::ICanChannel>> channels,
     common::CarPlatform carPlatform,
     uint32_t ecuId,
     PinCracker::Direction direction,
     uint64_t startPin,
     std::function<void(PinCracker::State, uint64_t)> stateCallback,
-    std::shared_ptr<PinCrackerStorage> storage = {});
+    PinCrackerStorage& storage);
 
 } // namespace flasher
 ```
@@ -327,20 +329,39 @@ std::unique_ptr<PinCracker> createPinCracker(
 ```
 conf = getConfigurationInfoByCarPlatform(carPlatform)
 [ecuBus, ecuInfo] = getEcuInfoByEcuId(carPlatform, ecuId)
-channels = channelProvider.getAllChannels(ecuId)
 
 for i, bus in conf.busInfo:
+    if i >= channels.size(): break
     steps = createPinCrackerStepsForBus(bus, ecuId)
     // ISO15765 → UDSPinCrackerSteps
     // CAN 29-bit → D2PinCrackerSteps
     // Остальные → skip
-    if bus.baudrate == ecuBus.baudrate: ecuBusIndex = i
-    buses.push_back({channels[i], steps})
+    if bus.baudrate == ecuBus.baudrate: ecuBusIndex = buses.size()
+    buses.push_back({std::move(channels[i]), steps})
 
 return PinCracker(buses, ecuBusIndex, ...)
 ```
 
-**Helper `createPinCrackerStepsForBus(`BusConfig`, ecuId)`:** создаёт шаги для одной шины, используя `createCanIdProvider(bus)` — см. `can_id_provider.md`.
+**Пример использования (из `VolvoFlasher.cpp`):**
+
+```cpp
+common::J2534ChannelProvider provider(j2534, carPlatform);
+auto channels = provider.getAllChannels(ecuId);
+auto cracker = flasher::createPinCracker(
+    std::move(channels), carPlatform, ecuId, ...);
+```
+
+**`DummyPinCrackerSteps`** — реализация `PinCrackerSteps`, которая логирует все вызовы (`preAuth`, `postAuth`, `tryPin`, `keepAlive`), но не отправляет реальных CAN-сообщений. Используется для тестирования `PinCracker` без реального J2534-устройства.
+
+**`createDummyCracker(CarPlatform, ecuId, ...)`:** создаёт `PinCracker` с `DummyPinCrackerSteps` для каждой шины и пустыми каналами (`nullptr`). Параметры J2534 не нужны — только `CarPlatform` и `ecuId` для определения конфигурации шин. Файл: `Flasher/flasher/pin/PinCrackerFactory.hpp`.
+
+**Helper `createPinCrackerStepsForBus(bus, ecuId)`:** создаёт шаги для одной шины, используя `createCanIdProvider(bus)` — см. `can_id_provider.md`.
+
+**Преимущества:**
+- Фабрика не содержит `#include <j2534/...>`
+- Каналы могут быть открыты через любой `ICanChannel`-провайдер (J2534, ELM327, ESP32, STM32)
+- `PinCracker` и фабрика тестируются с `MockICanChannel` без реального J2534-устройства
+- `createDummyCracker` позволяет тестировать алгоритм перебора без подключения к шине
 
 ### 3.8. PinCrackerStorage — хранилище проверенных ПИН-кодов
 
@@ -390,7 +411,7 @@ public:
 
 | Класс | Назначение | Где |
 |---|---|---|
-| `NullPinCrackerStorage` | No-op, по умолчанию | `PinCrackerStorage.hpp` (inline) |
+| `NullPinCrackerStorage` | No-op, для случаев без сохранения | `PinCrackerStorage.hpp` (inline) |
 | `InMemoryPinCrackerStorage` | Хранит проверенные ПИНы в `std::unordered_set` или битовой маске | `Flasher/src/pin/InMemoryPinCrackerStorage.cpp` |
 | `FilePinCrackerStorage` | Загружает/сохраняет ПИНы в файл (бинарный или CSV) | `Flasher/src/pin/FilePinCrackerStorage.cpp` |
 
@@ -435,18 +456,12 @@ public:
 
 #### 3.8.4. Интеграция в PinCracker
 
-**Конструктор** принимает опциональное хранилище (по умолчанию `NullPinCrackerStorage`):
+**Конструктор** принимает хранилище как ссылку. Для no-op поведения передавать `NullPinCrackerStorage`:
 
 ```cpp
-class PinCracker {
-public:
-    PinCracker(j2534::J2534& j2534, CarPlatform carPlatform,
-               std::unique_ptr<PinCrackerSteps> steps,
-               Direction direction, uint64_t startPin,
-               std::function<void(State, uint64_t)> stateCallback,
-               std::shared_ptr<PinCrackerStorage> storage = {});
-    // ...
-};
+NullPinCrackerStorage nullStorage;
+PinCracker cracker(j2534, platform, std::move(steps),
+                   Direction::Up, 0, callback, nullStorage);
 ```
 
 **Изменение в `run()`:** перед каждой попыткой проверять хранилище; после попытки (успех/неуспех) отмечать ПИН как проверенный.
@@ -454,19 +469,19 @@ public:
 ```diff
  while pin <= endPin && pin >= endPin && !_stop:
 +    // Пропустить уже проверенные ПИНы
-+    while !_stop && _storage && _storage->isChecked(pin):
++    while !_stop && _storage.isChecked(pin):
 +        pin += step
 +
      setState(Work, pin)
      if _steps->tryPin(*channels[0], pin):
          _foundPin = pin
-+        _storage->markChecked(pin)     // отметить найденный
++        _storage.markChecked(pin)     // отметить найденный
          break
-+    _storage->markChecked(pin)         // отметить неудачный
++    _storage.markChecked(pin)         // отметить неудачный
      pin += step
      sleep(_steps->getRetryDelay())
 
-+_storage->flush()                      // сохранить состояние
++_storage.flush()                      // сохранить состояние
 ```
 
 **Требования к `FilePinCrackerStorage.flush()`:**
@@ -476,10 +491,10 @@ public:
 
 #### 3.8.5. Совместное использование
 
-Несколько `PinCracker` могут использовать общее хранилище через `shared_ptr`:
+Несколько `PinCracker` могут использовать одно хранилище через ссылку:
 
 ```
-auto storage = std::make_shared<FilePinCrackerStorage>("pins.bin");
+InMemoryPinCrackerStorage storage;
 
 // Первый ЭБУ: 0x000000 → 0x100000
 PinCracker cracker1{ j2534, platform, makeUDSSteps(),

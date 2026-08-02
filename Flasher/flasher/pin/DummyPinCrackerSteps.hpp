@@ -7,9 +7,9 @@
 
 namespace flasher {
 
-class D2PinCrackerSteps final : public PinCrackerSteps {
+class DummyPinCrackerSteps final : public PinCrackerSteps {
 public:
-    explicit D2PinCrackerSteps(std::unique_ptr<common::CanIdProvider> canIdProvider,
+    explicit DummyPinCrackerSteps(std::unique_ptr<common::CanIdProvider> canIdProvider,
                                uint8_t ecuId)
         : _canIdProvider{ std::move(canIdProvider) }
         , _ecuId{ ecuId }
@@ -24,6 +24,8 @@ public:
     std::vector<unsigned long> startKeepAlive(common::ICanChannel& channel) override;
 
     void stopKeepAlive(const std::vector<unsigned long>& ids) override;
+
+    virtual std::chrono::milliseconds getRetryDelay() const { return std::chrono::milliseconds{10}; }
 
     const common::CanIdProvider& getCanIdProvider() const override { return *_canIdProvider; }
 
