@@ -23,7 +23,7 @@ These scripts are intended to sit beside the executables downloaded from the Git
 
 ## Defaults
 
-\`config/defaults.json\` documents the package defaults: device \`sm2 pro\`, platform \`P1\`, 500000 baud, ECU \`7A\`, PIN search starting at zero and moving upward. The shortcut scripts expose these as parameters so they work without a separate JSON parser dependency; edit the script defaults or pass parameters to override them.
+\`config/defaults.json\` documents the package defaults: device \`sm2 pro\`, platform \`P1\`, 500000 baud, ECU \`7A\`, PIN search starting at zero and moving upward. The shortcut scripts read these defaults from `config/defaults.json`; pass script parameters to override them for one run.
 
 ## Safety and limitations
 
