@@ -4,6 +4,11 @@ These scripts are intended to sit beside the executables downloaded from the Git
 
 ## Examples
 
+```powershell
+# Read PIN from CEM (direct equivalent of the command-line example)
+.\\Read-CEM-Pin.ps1
+```
+
 \`\`\`powershell
 # Equivalent in intent to: VolvoFlasher.exe -d "sm2 pro" -f "P1" pin
 .\Start-PinSearch-P1.ps1
