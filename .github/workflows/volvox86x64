@@ -1,0 +1,75 @@
+name: VolvoTools build (Win32 + x64)
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            cmake_arch: ""
+            artifact_name: volvotools-x64
+          - arch: Win32
+            cmake_arch: -A Win32
+            artifact_name: volvotools-win32
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Conan
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          pip install conan
+
+      - name: Detect Conan profile
+        shell: powershell
+        run: conan profile detect --force
+
+      - name: Install dependencies
+        shell: powershell
+        run: conan install . --build=missing
+
+      - name: Configure CMake (${{ matrix.arch }})
+        shell: powershell
+        run: |
+          if ("${{ matrix.cmake_arch }}" -ne "") {
+            cmake --preset conan-default ${{ matrix.cmake_arch }}
+          } else {
+            cmake --preset conan-default
+          }
+
+      - name: Build project (${{ matrix.arch }})
+        shell: powershell
+        run: cmake --build build --config Release
+
+      - name: Show built outputs
+        shell: powershell
+        run: |
+          Get-ChildItem .\build -Recurse -Filter "Volvo*.exe" | Select-Object FullName
+
+      - name: Upload artifacts (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            build/**/VolvoFlasher.exe
+            build/**/VolvoLogger.exe
+          if-no-files-found: error
