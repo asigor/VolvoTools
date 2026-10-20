@@ -1,0 +1,13 @@
+{
+  "device": "sm2 pro",
+  "platform": "P1",
+  "baudrate": 500000,
+  "ecu": "7A",
+  "pin_start": "0x0",
+  "pin_direction": "up",
+  "logger": {
+    "variables": "",
+    "output": ".\\logs\\p1.csv",
+    "print": 5
+  }
+}
