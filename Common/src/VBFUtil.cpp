@@ -2,6 +2,7 @@
 
 #include "common/protocols/D2ECUType.hpp"
 #include "common/ChecksumHelper.hpp"
+#include "common/Crc.hpp"
 #include "common/VBFParser.hpp"
 #include "common/Util.hpp"
 #include "common/utility.hpp"
@@ -14,9 +15,13 @@ namespace common {
 
 namespace {
 
-void updateChecksum(std::vector<uint8_t>& data)
+void updateChecksum(std::vector<uint8_t>& data, CarPlatform carPlatform,
+                    uint8_t ecuId, const std::string& additionalData = {})
 {
-    util::ChecksumHelper helper;
+    util::ChecksumHelper helper(carPlatform, ecuId, toLower(additionalData));
+    if(!helper.isSupported(data)) {
+        return;
+    }
     for(size_t i = 0; i < 5 && !helper.check(data); ++i) {
         helper.update(data);
     }
@@ -35,27 +40,98 @@ VBFChunk createChunk(const std::vector<uint8_t>& data, uint32_t offset, size_t s
 
 VBF createVBFForME7(std::vector<uint8_t>& data)
 {
-    updateChecksum(data);
-    return {{}, {createChunk(data, 0x8000, 0x6000),
-                 createChunk(data, 0x10000, data.size() - 0x10000)}};
+    return {
+        VBFHeader{ .eraseBlocks{ { 0x8000, 0x6000 }, { 0x10000, static_cast<uint32_t>(data.size()) - 0x10000 } } },
+        {createChunk(data, 0x8000, 0x6000),
+         createChunk(data, 0x10000, data.size() - 0x10000)}};
 }
 
 VBF createVBFForME9P1(std::vector<uint8_t>& data)
 {
-    updateChecksum(data);
-    return {{}, {createChunk(data, 0x20000, 0x70000),
-                 createChunk(data, 0xA0000, data.size() - 0xA0000)}};
+    return {
+        VBFHeader{ .eraseBlocks{ { 0x20000, 0x0 } } },
+        {createChunk(data, 0x20000, 0x70000),
+         createChunk(data, 0xA0000, 0x150000)}};
 }
 
 VBF createVBFForME9P3(std::vector<uint8_t>& data)
 {
-    // TODO: need to detect checksum areas correctly.
-    //updateChecksum(data);
-    return {{}, {createChunk(data, 0x20000, 0x70000),
-                 createChunk(data, 0xA0000, 0x120000),
-                 createChunk(data, 0x1C2000, 0x1E000),
-                 createChunk(data, 0x1E0000, 0x20000)
+    return {
+        VBFHeader{ .eraseBlocks{ { 0x20000, 0x70000 }, { 0xA0000, 0x120000 },
+                               { 0x1C2000, 0x1E000 }, { 0x1E0000, 0x20000 } } },
+        {createChunk(data, 0x20000, 0x70000),
+         createChunk(data, 0xA0000, 0x120000),
+         createChunk(data, 0x1C2000, 0x1E000),
+         createChunk(data, 0x1E0000, 0x20000)}};
+}
+
+VBF createVBFForDensoP3(std::vector<uint8_t>& data)
+{
+    return {{}, {createChunk(data, 0x8000, 0x18000),
+                 createChunk(data, 0x20000, 0x20000),
+                 createChunk(data, 0x40000, 0x20000),
+                 createChunk(data, 0x60000, 0x20000),
+                 createChunk(data, 0x80000, 0x20000),
+                 createChunk(data, 0xA0000, 0x20000),
+                 createChunk(data, 0xC0000, 0x20000),
+                 createChunk(data, 0xE0000, 0x20000),
                 }};
+}
+
+VBF createVBFForDensoP3Restyling(std::vector<uint8_t>& data)
+{
+    return {
+        VBFHeader{ .eraseBlocks{
+            { 0x8000, 0x2000 },
+            { 0xA000, 0x2000 },
+            { 0xC000, 0x2000 },
+            { 0xE000, 0x2000 },
+            { 0x10000, 0x10000 },
+            { 0x20000, 0x10000 },
+            { 0x30000, 0x10000 },
+            { 0x40000, 0x10000 },
+            { 0x50000, 0x10000 },
+            { 0x60000, 0x10000 },
+            { 0x70000, 0x10000 },
+            { 0x80000, 0x10000 },
+            { 0x90000, 0x10000 },
+            { 0xA0000, 0x20000 },
+            { 0xC0000, 0x20000 },
+            { 0xE0000, 0x20000 },
+            { 0x100000, 0x20000 },
+            { 0x120000, 0x20000 },
+            { 0x140000, 0x20000 },
+            { 0x160000, 0x20000 },
+            { 0x180000, 0x20000 },
+            { 0x1A0000, 0x20000 },
+            { 0x1C0000, 0x20000 },
+            { 0x1E0000, 0x20000 },
+        } },
+        {createChunk(data, 0x8000, 0x2000),
+         createChunk(data, 0xA000, 0x2000),
+         createChunk(data, 0xC000, 0x2000),
+         createChunk(data, 0xE000, 0x2000),
+         createChunk(data, 0x10000, 0x10000),
+         createChunk(data, 0x20000, 0x10000),
+         createChunk(data, 0x30000, 0x10000),
+         createChunk(data, 0x40000, 0x10000),
+         createChunk(data, 0x50000, 0x10000),
+         createChunk(data, 0x60000, 0x10000),
+         createChunk(data, 0x70000, 0x10000),
+         createChunk(data, 0x80000, 0x10000),
+         createChunk(data, 0x90000, 0x10000),
+         createChunk(data, 0xA0000, 0x20000),
+         createChunk(data, 0xC0000, 0x20000),
+         createChunk(data, 0xE0000, 0x20000),
+         createChunk(data, 0x100000, 0x20000),
+         createChunk(data, 0x120000, 0x20000),
+         createChunk(data, 0x140000, 0x20000),
+         createChunk(data, 0x160000, 0x20000),
+         createChunk(data, 0x180000, 0x20000),
+         createChunk(data, 0x1A0000, 0x20000),
+         createChunk(data, 0x1C0000, 0x20000),
+         createChunk(data, 0x1E0000, 0x1FF00),
+    }};
 }
 
 VBF createVBFForVAGMED91(std::vector<uint8_t>& data)
@@ -69,12 +145,11 @@ VBF createVBFForVAGMED91(std::vector<uint8_t>& data)
 
 VBF createVBFForVAGMED912(std::vector<uint8_t>& data)
 {
-    updateChecksum(data);
     return { {}, {createChunk(data, 0x20000, 0x70000),
                  createChunk(data, 0xA0000, data.size() - 0xA0000)} };
 }
 
-VBF createVBFForTCM(std::vector<uint8_t>& data)
+VBF createVBFForTCMAW55(std::vector<uint8_t>& data)
 {
     return {{}, {createChunk(data, 0x8000, 0x8000),
                  createChunk(data, 0x10000, 0x10000),
@@ -86,21 +161,44 @@ VBF createVBFForTCM(std::vector<uint8_t>& data)
                  createChunk(data, 0x70000, 0x10000)}};
 }
 
+VBF createVBFForTCMTF80(std::vector<uint8_t>& data)
+{
+    return {{}, {createChunk(data, 0x1000, 0x1000),
+                 createChunk(data, 0x2000, 0x1000),
+                 createChunk(data, 0x3000, 0x1000),
+                 createChunk(data, 0x4000, 0x1000),
+                 createChunk(data, 0x5000, 0x1000),
+                 createChunk(data, 0x8000, 0x8000),
+                 createChunk(data, 0x10000, 0x10000),
+                 createChunk(data, 0x20000, 0x10000),
+                 createChunk(data, 0x30000, 0x10000),
+                 createChunk(data, 0x40000, 0x10000),
+                 createChunk(data, 0x50000, 0x10000),
+                 createChunk(data, 0x60000, 0x10000),
+                 createChunk(data, 0x70000, 0x10000)}};
+}
+
 VBF createVBFForDEMGen2(std::vector<uint8_t>& data)
 {
-    return {{}, {createChunk(data, 0x6000, 0x2000),
-                 createChunk(data, 0x10000, 0x30000)}};
+    return {
+        VBFHeader{ .eraseBlocks{ { 0x6000, 0x2000 }, { 0x10000, 0x10000 }, { 0x20000, 0x10000 }, {0x30000, 0x10000} } },
+        { createChunk(data, 0x6000, 0x2000),
+          createChunk(data, 0x10000, 0x30000)}};
 }
 
 VBF createVBFForDEMGen3(std::vector<uint8_t>& data)
 {
-    return {{}, {createChunk(data, 0x4000, 0x2000),
-                 createChunk(data, 0x18000, 0x38000)}};
+    return {
+        VBFHeader{ .eraseBlocks{ { 0x4000, 0x2000, }, { 0x18000, 0x2000 }, { 0x20000, 0x10000 },
+                                 { 0x30000, 0x10000 }, { 0x40000, 0x10000 } } },
+        { createChunk(data, 0x4000, 0x2000),
+          createChunk(data, 0x18000, 0x38000) } };
 }
 
 VBF createVbfFromBinary(CarPlatform carPlatform, uint8_t ecuId,
                                 const std::string& additionalData, std::vector<uint8_t>&& data)
 {
+    updateChecksum(data, carPlatform, ecuId, additionalData);
     switch(carPlatform) {
     case CarPlatform::P80:
     case CarPlatform::P2:
@@ -108,8 +206,11 @@ VBF createVbfFromBinary(CarPlatform carPlatform, uint8_t ecuId,
         if(ecuId == to_underlying(D2ECUType::ECM_ME)) {
             return createVBFForME7(data);
         }
-        else if(ecuId == to_underlying(D2ECUType::TCM)) {
-            return createVBFForTCM(data);
+        else if(ecuId == to_underlying(D2ECUType::TCM) && toLower(additionalData) == "aw55_p2") {
+            return createVBFForTCMAW55(data);
+        }
+        else if(ecuId == to_underlying(D2ECUType::TCM) && toLower(additionalData) == "tf80_p2") {
+            return createVBFForTCMTF80(data);
         }
         else if(ecuId == to_underlying(D2ECUType::DEM) && toLower(additionalData) == "gen2") {
             return createVBFForDEMGen2(data);
@@ -123,7 +224,7 @@ VBF createVbfFromBinary(CarPlatform carPlatform, uint8_t ecuId,
             return createVBFForME9P1(data);
         }
         else if(ecuId == to_underlying(D2ECUType::TCM)) {
-            return createVBFForTCM(data);
+            return createVBFForTCMAW55(data);
         }
         break;
     case common::CarPlatform::P3:
@@ -131,8 +232,14 @@ VBF createVbfFromBinary(CarPlatform carPlatform, uint8_t ecuId,
         if(ecuId == 0x10 && toLower(additionalData) == "me9_p3") {
             return createVBFForME9P3(data);
         }
+        else if(ecuId == 0x10 && toLower(additionalData) == "denso_p3") {
+            return createVBFForDensoP3(data);
+        }
+        else if(ecuId == 0x10 && toLower(additionalData) == "denso_p3_restyling") {
+            return createVBFForDensoP3Restyling(data);
+        }
         else if(ecuId == 0x18) {
-            return createVBFForTCM(data);
+            return createVBFForTCMTF80(data);
         }
         break;
     case common::CarPlatform::VAG_MED91:

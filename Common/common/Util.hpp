@@ -5,10 +5,14 @@
 #include "ConfigurationInfo.hpp"
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <sstream>
 #include <utility>
 #include <vector>
 #include <type_traits>
+#include <ios>
+#include <iomanip>
 
 class ICanChannel;
 
@@ -48,10 +52,16 @@ namespace common {
         openChannel(j2534::J2534& j2534, unsigned long ProtocolID, unsigned long Flags,
             unsigned long Baudrate, bool AdditionalConfiguration = false);
 
+    // canIdBitSize = 11 -> обычная адресация (ответ = canId + 0x8);
+    // canIdBitSize = 29 -> 0x18DA{ps}{sa}, ответ 0x18DA{sa}{ps} (паритет ID меняется).
     std::unique_ptr<j2534::J2534Channel>
-        openUDSChannel(j2534::J2534& j2534, unsigned long Baudrate, uint32_t canId = 0);
+        openUDSChannel(j2534::J2534& j2534, unsigned long Baudrate, uint32_t canId = 0,
+                       uint32_t canIdBitSize = 11);
 
-    bool prepareUDSChannel(j2534::J2534Channel& channel, uint32_t canId);
+    bool prepareUDSChannel(j2534::J2534Channel& channel, uint32_t canId, bool isExtendedId = false);
+
+    // CAN ID ответа ЭБУ на запрос canId (для 11-bit: +0x8, для 29-bit: 0x18DA{ps}{sa} -> 0x18DA{sa}{ps}).
+    uint32_t makeUDSResponseCanId(uint32_t canId, bool isExtendedId);
     bool prepareTP20Channel(j2534::J2534Channel& channel, uint32_t canId);
 
     std::unique_ptr<j2534::J2534Channel>
@@ -76,11 +86,25 @@ namespace common {
 
     CarPlatform getPlatfromFromVIN(const std::string& vin);
 
+    // Модельный год по 10-му символу VIN: '1'..'9' -> 2001..2009, 'A'..'Y' (без I, O, Q, U, Z)
+    // -> 2010..2030. Возвращает 0, если символ не распознан или VIN короче 10 символов.
+    int getModelYearFromVIN(const std::string& vin);
+
     CarPlatform parseCarPlatform(std::string input);
 
     ConfigurationInfo getConfigurationInfoByCarPlatform(CarPlatform carPlatform);
 
     std::tuple<BusConfiguration, ECUInfo> getEcuInfoByEcuId(CarPlatform carPlatform, uint32_t ecuId);
+
+    // Address (PS) якорных ЭБУ платформы — CEM и ECM. Берётся из data.yaml по префиксу
+    // поля Name, поэтому новые платформы подхватываются без правки кода.
+    // nullopt — такого ЭБУ на платформе нет (у P80 нет CEM, у SPA узлы не описаны).
+    // protocol != NONE — искать только на шинах этого протокола: у P1_UDS и P2_UDS
+    // два CEM с разными Address — на D2-шине (CAN) и на UDS-шине (ISO15765).
+    std::optional<uint32_t> getCemEcuId(CarPlatform carPlatform,
+                                        ProtocolType protocol = ProtocolType::NONE);
+    std::optional<uint32_t> getEcmEcuId(CarPlatform carPlatform,
+                                        ProtocolType protocol = ProtocolType::NONE);
 
     ICanChannel& getChannelByEcuId(CarPlatform carPlatform, uint32_t ecuId,
                                    const std::vector<std::unique_ptr<ICanChannel>>& channels);
@@ -93,7 +117,6 @@ namespace common {
 
     void checkTP20Error(uint8_t requestId, const uint8_t* data, size_t dataSize);
     void checkUDSError(uint8_t requestId, const uint8_t* data, size_t dataSize);
-    void checkD2Error(uint8_t ecuId, const std::vector<uint8_t>& requestId, const uint8_t* data, size_t dataSize);
 
     CarPlatform parseCarPlatform(std::string input);
 
@@ -101,6 +124,15 @@ namespace common {
 
     void initLogger(const std::string& logFilename, bool enableConsole = false, bool debugMode = false);
 
-    uint16_t crc16(const uint8_t* data_p, size_t length);
+    template<typename T>
+    std::string dumpArray(const T& vec)
+    {
+        std::stringstream ss;
+        ss << std::hex << std::setfill('0');
+        for(const auto& i: vec) {
+            ss << std::setw(2) << int(i) << " ";
+        }
+        return ss.str();
+    }
 
 } // namespace common

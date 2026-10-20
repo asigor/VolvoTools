@@ -27,8 +27,13 @@ cmake_install.cmake
 myeasylog.log
 .opencode
 .vscode
+.clangd 
 *.vcxproj
 *.vcxproj.filters
 *.user
 *.VC.db
 *.sln
+
+/build-lsp
+/build-lsp/
+

@@ -3,63 +3,54 @@
 #include "common/protocols/UDSRequest.hpp"
 #include "common/protocols/UDSError.hpp"
 #include "common/ICanChannel.hpp"
+#include "common/KeyGenerators.hpp"
 #include "common/Util.hpp"
 
 #include <array>
 #define LOG_MODULE_NAME "common"
 #include "common/LogHelper.hpp"
 
+#include <iomanip>
 #include <thread>
 
 namespace common {
-
-	namespace {
-
-		uint32_t generateKeyImpl(uint32_t hash, uint32_t input)
-		{
-			for (size_t i = 0; i < 32; ++i)
-			{
-				const bool is_bit_set = (hash ^ input) & 1;
-				input >>= 1;
-				hash >>= 1;
-				if (is_bit_set)
-					hash = (hash | 0x800000) ^ 0x109028;
-			}
-			return hash;
-		}
-
-		uint32_t generateKey(const std::array<uint8_t, 5>& pin_array, const std::array<uint8_t, 3>& seed_array)
-		{
-			const uint32_t high_part = pin_array[4] << 24 | pin_array[3] << 16 | pin_array[2] << 8 | pin_array[1];
-			const uint32_t low_part = pin_array[0] << 24 | seed_array[2] << 16 | seed_array[1] << 8 | seed_array[0];
-			unsigned int hash = 0xC541A9;
-			hash = generateKeyImpl(hash, low_part);
-			hash = generateKeyImpl(hash, high_part);
-			uint32_t result = ((hash & 0xF00000) >> 12) | hash & 0xF000 | (uint8_t)(16 * hash)
-				| ((hash & 0xFF0) << 12) | ((hash & 0xF0000) >> 16);
-			return result;
-		}
-
-	}
 
 	bool UDSProtocolCommonSteps::fallAsleep(const std::vector<std::unique_ptr<ICanChannel>>& channels,
                                              uint32_t funcCanId)
 	{
         LOG_MODULE(TRACE) << "fallAsleep enter";
-		for (size_t i = 0; i < channels.size(); ++i) {
-			unsigned long msgId;
-			if (!channels[i]->startPeriodicMsg({funcCanId, {0x10, 0x02}}, 5, msgId)) {
-				return false;
-			}
-			std::this_thread::sleep_for(std::chrono::seconds(2));
-			channels[i]->stopPeriodicMsg(msgId);
-		}
+        std::vector<std::optional<unsigned long>> msgIds(channels.size());
+        for (size_t i = 0; i < channels.size(); ++i) {
+            unsigned long msgId;
+            if (channels[i]->startPeriodicMsg({funcCanId, { 0x10, 0x82 } }, 5, msgId)) {
+                msgIds[i] = msgId;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        for (size_t i = 0; i < channels.size(); ++i) {
+            if (msgIds[i].has_value()) {
+                channels[i]->stopPeriodicMsg(msgIds[i].value());
+            }
+        }
         LOG_MODULE(TRACE) << "fallAsleep exit";
         return true;
 	}
 
-	std::vector<unsigned long> UDSProtocolCommonSteps::keepAlive(ICanChannel& channel,
-                                                                   uint32_t funcCanId)
+    bool UDSProtocolCommonSteps::startProgrammingSession(ICanChannel& channel, uint32_t canId)
+    {
+        LOG_MODULE(TRACE) << "startProgrammingSession enter";
+        UDSRequest request(canId, { 0x10, 0x02 });
+        const auto response(request.process(channel));
+        if (response.empty()) {
+            LOG_MODULE(ERROR) << "startProgrammingSession failed";
+            return false;
+        }
+        LOG_MODULE(TRACE) << "startProgrammingSession exit";
+        return true;
+    }
+
+    std::vector<unsigned long> UDSProtocolCommonSteps::UDSProtocolCommonSteps::keepAlive(
+        ICanChannel& channel, uint32_t funcCanId)
 	{
 		std::vector<unsigned long> result;
 		unsigned long msgId;
@@ -77,56 +68,84 @@ namespace common {
             for (size_t i = 0; i < channels.size(); ++i) {
                 unsigned long msgId;
                 if (!channels[i]->startPeriodicMsg({funcCanId, {0x11, static_cast<uint8_t>(idToWakeUp)}}, 20, msgId)) {
-                    LOG_MODULE(ERROR) << "wakeUp error, failed to start periodic message on channel = " << i;
-                    return;
+                        LOG_MODULE(ERROR) << "wakeUp error, failed to start periodic message on channel = " << i
+                                      << ", baudrate = " << channels[i]->getBaudrate();
+                    continue;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 channels[i]->stopPeriodicMsg(msgId);
             }
         }
         LOG_MODULE(TRACE) << "wakeUp exit";
-        return;
 	}
 
 	bool UDSProtocolCommonSteps::authorize(ICanChannel& channel, uint32_t canId,
 		const std::array<uint8_t, 5>& pin)
 	{
         LOG_SCOPE_DURATION(authorize);
-        LOG_MODULE(TRACE) << "authorize enter pin: "<< std::hex << pin[0] << pin[1] << pin[2] << pin[3] << pin[4];
+        constexpr size_t attemptsCount = 5;
+        constexpr auto retryDelay = std::chrono::milliseconds(500);
+        const auto pinToString = [&pin]() {
+            std::stringstream stream;
+            stream << std::hex << std::setfill('0');
+            for(size_t i = 0; i < pin.size(); ++i) {
+                stream << std::setw(2) << static_cast<int>(pin[i]) << " ";
+            }
+            return stream.str();
+        };
+        LOG_MODULE(TRACE) << "authorize enter pin: " << pinToString();
         UDSRequest seedRequest(canId, { 0x27, 0x01 });
-        for(size_t i = 0; i < 5; ++i) {
+        for(size_t i = 0; i < attemptsCount; ++i) {
+            const char* phase = "seed";
             try {
                 channel.clearRx();
                 const auto seedResponse(seedRequest.process(channel));
-                if (seedResponse.size() < 5)
+                if (seedResponse.size() < 5) {
+                    LOG_MODULE(ERROR) << "authorize failed: short seed response "
+                                      << dumpArray(seedResponse) << ", pin: " << pinToString();
                     return false;
+                }
                 std::array<uint8_t, 3> seed = { seedResponse[2], seedResponse[3], seedResponse[4] };
-                uint32_t key = generateKey(pin, seed);
+                uint32_t key = generateKeyVolvoFord(pin, seed);
                 channel.clearRx();
+                phase = "key";
                 UDSRequest keyRequest(canId, { 0x27, 0x02, (key >> 16) & 0xFF, (key >> 8) & 0xFF, key & 0xFF });
-                try {
-                    const auto keyResponse(keyRequest.process(channel));
-                    const bool result = keyResponse.size() >= 2 && keyResponse[1] == 0x02;
-                    if(!result) {
-                        LOG_MODULE(ERROR) << "authorize wrong pin, pin: "<< std::hex << pin[0] << pin[1] << pin[2] << pin[3] << pin[4];
-                    }
-                    else {
-                        LOG_MODULE(INFO) << "authorize success, pin: "<< std::hex << pin[0] << pin[1] << pin[2] << pin[3] << pin[4];
-                    }
-                    return result;
+                const auto keyResponse(keyRequest.process(channel));
+                const bool result = keyResponse.size() >= 2 && keyResponse[1] == 0x02;
+                if(!result) {
+                    LOG_MODULE(ERROR) << "authorize wrong pin, answer: " << dumpArray(keyResponse)
+                                      << ", pin: " << pinToString();
                 }
-                catch(UDSError& error) {
-                    if(error.getErrorCode() == UDSError::ErrorCode::RequiredTimeDelayHasNotExpired) {
-                    }
-                    LOG_MODULE(ERROR) << "authorize error: " << error.what() << ", pin = "
-                               << std::hex << pin[0] << pin[1] << pin[2] << pin[3] << pin[4];
+                else {
+                    LOG_MODULE(INFO) << "authorize success, pin: " << pinToString();
                 }
+                return result;
             }
-            catch (...) {
-                std::this_thread::sleep_for(std::chrono::seconds(5));
+            catch(const UDSError& error) {
+                // ЭБУ ответил негативно. Повторять тот же запрос имеет смысл только
+                // если он просит переждать (0x37) — остальные коды это детерминированный
+                // отказ (неверный ключ, исчерпаны попытки, запрет в этой сессии).
+                LOG_MODULE(ERROR) << "authorize failed on " << phase << " request: " << error.what()
+                                  << " (0x" << std::hex << static_cast<int>(error.getErrorCode()) << ")"
+                                  << ", pin: " << pinToString();
+                if (error.getErrorCode() != UDSError::ErrorCode::RequiredTimeDelayHasNotExpired) {
+                    return false;
+                }
+                std::this_thread::sleep_for(retryDelay);
+            }
+            catch(const std::exception& ex) {
+                // Транспортная ошибка (нет ответа, сбой отправки) — попытку повторяем.
+                LOG_MODULE(ERROR) << "authorize failed on " << phase << " request: " << ex.what()
+                                  << ", pin: " << pinToString();
+                std::this_thread::sleep_for(retryDelay);
+            }
+            catch(...) {
+                LOG_MODULE(ERROR) << "authorize failed on " << phase
+                                  << " request: unknown error, pin: " << pinToString();
+                std::this_thread::sleep_for(retryDelay);
             }
         }
-        LOG_MODULE(TRACE) << "authorization failed, pin: "<< std::hex << pin[0] << pin[1] << pin[2] << pin[3] << pin[4];
+        LOG_MODULE(TRACE) << "authorization failed, pin: " << pinToString();
         return false;
 	}
 
@@ -244,26 +263,26 @@ namespace common {
         return false;
 	}
 
-    bool UDSProtocolCommonSteps::eraseChunk(ICanChannel& channel, uint32_t canId, const VBFChunk& chunk)
+    bool UDSProtocolCommonSteps::eraseChunk(ICanChannel& channel, uint32_t canId, const DataBlock& block)
     {
-        LOG_MODULE(TRACE) << "eraseChunk enter chunk: " << std::hex << chunk.writeOffset;
-        const auto eraseAddr = toVector(chunk.writeOffset);
-        const auto eraseSize = toVector(static_cast<uint32_t>(chunk.data.size()));
+        LOG_MODULE(TRACE) << "eraseChunk enter chunk: " << std::hex << block.startAddr;
+        const auto eraseAddr = toVector(block.startAddr);
+        const auto eraseSize = toVector(block.length);
         for(size_t i = 0; i < 1; ++i) {
             if (!channel.send({canId, {0x31, 0x01, 0xff, 0x00,
                                        eraseAddr[0], eraseAddr[1], eraseAddr[2], eraseAddr[3],
                                        eraseSize[0], eraseSize[1], eraseSize[2], eraseSize[3]}})) {
                 continue;
             }
-            const auto result{ readMessageCheckAndGet(channel, { 0x71, 0x01, 0xff, 0x00, 0x00 }, {}, 10) };
+            const auto result{ readMessageCheckAndGet(channel, { 0x71, 0x01, 0xff, 0x00 }, {}, 10) };
             if(result.empty()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 continue;
             }
-            LOG_MODULE(TRACE) << "eraseChunk completed, offset = " << std::hex << chunk.writeOffset;
+            LOG_MODULE(TRACE) << "eraseChunk completed, offset = " << std::hex << block.startAddr;
             return true;
         }
-        LOG_MODULE(ERROR) << "Failed to erase chunk: " << std::hex << chunk.writeOffset;
+        LOG_MODULE(ERROR) << "Failed to erase chunk: " << std::hex << block.startAddr;
         return false;
     }
 
@@ -294,7 +313,41 @@ namespace common {
             LOG_MODULE(ERROR) << "checkValidApplication error, ex = " << ex.what();
             return false;
         }
-        LOG_MODULE(TRACE) << "checkValidApplication finshed";
+        LOG_MODULE(TRACE) << "checkValidApplication completed";
+        return true;
+    }
+
+    bool UDSProtocolCommonSteps::getChunkCRC16(ICanChannel& channel, uint32_t canId,
+                                               const DataBlock& block, uint16_t& crc)
+    {
+        LOG_MODULE(TRACE) << "getChunkCRC16 enter, addr = " << std::hex << block.startAddr;;
+        const auto dataAddr = common::toVector(block.startAddr);
+        const auto dataLength = common::toVector(block.length);
+        // Ответ на предыдущий запрос не должен приниматься за ответ на этот.
+        channel.clearRx();
+        UDSRequest request(canId, {0x31, 0x01, 0xFF, 0x01,
+                                   dataAddr[0], dataAddr[1], dataAddr[2], dataAddr[3],
+                                   dataLength[0], dataLength[1], dataLength[2], dataLength[3]});
+        try {
+            const auto response = request.process(channel);
+            // Ответ рутины: 71 01 <routineId hi,lo> <ширина контрольной суммы в битах> <данные>.
+            // [4] = 0x10 = 16 бит, дальше CRC16 (big-endian). У рутины стирания 0xFF00 на этом
+            // месте 0x00 (ноль бит данных) — см. ожидаемый ответ в eraseChunk.
+            // Формат не совпал — не угадываем: false, блок уйдёт в запись (консервативно).
+            if (response.size() < 7 || response[0] != 0x71 || response[1] != 0x01 ||
+                response[2] != 0xFF || response[3] != 0x01 || response[4] != 0x10) {
+                LOG_MODULE(ERROR) << "getChunkCRC16 unexpected response: " << dumpArray(response);
+                return false;
+            }
+            crc = static_cast<uint16_t>((response[5] << 8) | response[6]);
+            LOG_MODULE(DEBUG) << "getChunkCRC16 response: " << dumpArray(response)
+                              << "-> crc 0x" << std::hex << static_cast<uint32_t>(crc);
+        }
+        catch(const std::exception& ex) {
+            LOG_MODULE(ERROR) << "getChunkCRC16 error, ex = " << ex.what();
+            return false;
+        }
+        LOG_MODULE(TRACE) << "getChunkCRC16 finshed";
         return true;
     }
 

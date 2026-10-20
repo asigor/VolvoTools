@@ -3,7 +3,6 @@
 
 #include "common/CommonData.hpp"
 #include "common/BusConfiguration.hpp"
-#include "common/protocols/D2Error.hpp"
 #include "common/protocols/TP20Error.hpp"
 #include "common/protocols/UDSError.hpp"
 #include "common/ECUInfo.hpp"
@@ -20,6 +19,7 @@
 #include <codecvt>
 #include <cstdlib>
 #include <locale>
+#include <string_view>
 #include <unordered_map>
 #include <fstream>
 
@@ -48,12 +48,8 @@ namespace common {
     uint32_t encodeBigEndian(const std::vector<uint8_t>& data) {
         uint32_t result{};
         auto it = data.cbegin();
-        for(size_t i = 0; i < 4; ++i) {
+        for(size_t i = 0; i < 4 && it != data.cend(); ++i, ++it) {
             result += (*it) << (i * 8);
-            ++it;
-            if(it == data.cend()) {
-                break;
-            }
         }
         return result;
     }
@@ -61,12 +57,8 @@ namespace common {
     uint32_t encodeLittleEndian(const std::vector<uint8_t>& data) {
         uint32_t result{};
         auto it = data.crbegin();
-        for(size_t i = 0; i < 4; ++i) {
+        for(size_t i = 0; i < 4 && it != data.crend(); ++i, ++it) {
             result += ((*it) << (i * 8));
-            ++it;
-            if(it == data.crend()) {
-                break;
-            }
         }
         return result;
     }
@@ -251,6 +243,9 @@ namespace common {
         PASSTHRU_MSG msgFilter =
             makePassThruMsg(ProtocolID, Flags, { 0x00, 0x00, 0x00, 0x01 });
         channel->startMsgFilter(PASS_FILTER, &msgFilter, &msgFilter, nullptr, msgId);
+        msgFilter =
+            makePassThruMsg(ProtocolID, Flags, { 0x18, 0xDA, 0x00, 0x00 });
+        channel->startMsgFilter(PASS_FILTER, &msgFilter, &msgFilter, nullptr, msgId);
 
         if (AdditionalConfiguration && ProtocolID == CAN_XON_XOFF) {
             startXonXoffMessageFiltering(*channel, Flags);
@@ -263,8 +258,13 @@ namespace common {
     }
 
     std::unique_ptr<j2534::J2534Channel>
-        openUDSChannel(j2534::J2534& j2534, unsigned long baudrate, uint32_t canId) {
+        openUDSChannel(j2534::J2534& j2534, unsigned long baudrate, uint32_t canId,
+                       uint32_t canIdBitSize) {
 
+        // Для 29-битных ID признак формата обязан быть выставлен и при открытии канала
+        // (PassThruConnect), и в TxFlags сообщений — иначе адаптер трактует Data[0..3]
+        // как 11-битный ID и запрос уходит «в никуда».
+        const bool isExtendedId = (canIdBitSize == 29);
         std::unique_ptr<j2534::J2534Channel> channel;
         const std::vector<unsigned long> SupportedProtocols = { ISO15765_PS, ISO15765 };
         for (const auto& protocolId : SupportedProtocols) {
@@ -273,6 +273,10 @@ namespace common {
             }
             unsigned long flags = 0;
             unsigned long txFlags = ISO15765_FRAME_PAD;
+            if (isExtendedId) {
+                flags |= CAN_29BIT_ID;
+                txFlags |= CAN_29BIT_ID;
+            }
             if (protocolId == ISO15765 && baudrate == 125000)
                 flags |= PHYSICAL_CHANNEL;
             try {
@@ -287,7 +291,7 @@ namespace common {
             setupChannelPins(*channel);
 
             if (canId) {
-                prepareUDSChannel(*channel, canId);
+                prepareUDSChannel(*channel, canId, isExtendedId);
             }
 
             return std::move(channel);
@@ -295,8 +299,21 @@ namespace common {
         return {};
     }
 
-    bool prepareUDSChannel(j2534::J2534Channel& channel, uint32_t canId) {
-        const uint32_t responseCanId = canId + 0x8;
+    uint32_t makeUDSResponseCanId(uint32_t canId, bool isExtendedId) {
+        if (!isExtendedId) {
+            // 0x7E0 -> 0x7E8
+            return canId + 0x8;
+        }
+        // 0x18DA{ps}{sa} -> 0x18DA{sa}{ps}: 0x18DA50F1 -> 0x18DAF150.
+        // Меняются местами два младших байта (target/source address).
+        const uint32_t prefix = canId & 0xFFFF0000;
+        const uint32_t ps = (canId >> 8) & 0xFF;
+        const uint32_t sa = canId & 0xFF;
+        return prefix | (sa << 8) | ps;
+    }
+
+    bool prepareUDSChannel(j2534::J2534Channel& channel, uint32_t canId, bool isExtendedId) {
+        const uint32_t responseCanId = makeUDSResponseCanId(canId, isExtendedId);
         unsigned long msgId;
         PASSTHRU_MSG maskMsg =
             makePassThruMsg(channel.getProtocolId(), channel.getTxFlags(), { 0xFF, 0xFF, 0xFF, 0xFF });
@@ -465,8 +482,41 @@ namespace common {
         return readCheckAndGetImpl(channel, msgId, toCheck, result, retryCount);
     }
 
+    int getModelYearFromVIN(const std::string& vin)
+    {
+        // 10-й символ VIN — модельный год. Коды идут 30-летним циклом:
+        // 2001..2009 -> '1'..'9', 2010..2030 -> 'A'..'Y' без I, O, Q, U, Z.
+        // Для машин 1990-х буква попала бы в следующий цикл; нам это не мешает —
+        // там модельный год не нужен (он используется только для P1, а это 2004+).
+        constexpr size_t modelYearIndex{ 9 };
+        if (vin.size() <= modelYearIndex) {
+            return 0;
+        }
+        const auto code = static_cast<char>(std::toupper(static_cast<unsigned char>(vin[modelYearIndex])));
+        if (code >= '1' && code <= '9') {
+            return 2001 + (code - '1');
+        }
+        constexpr std::string_view modelYearLetters{ "ABCDEFGHJKLMNPRSTVWXY" };
+        const auto position = modelYearLetters.find(code);
+        if (position == std::string_view::npos) {
+            return 0;
+        }
+        return 2010 + static_cast<int>(position);
+    }
+
     CarPlatform getPlatfromFromVIN(const std::string& vin)
     {
+        // VIN = WMI(1-3) + VDS(4-8) + контрольный разряд(9) + модельный год(10) +
+        // завод(11) + серийный номер(12-17). Короче 11 символов — не VIN.
+        constexpr size_t plainVINLength{ 11 };
+        // Поколение электрики P1: "Elsys 1" (D2 на обеих шинах) до 2008 модельного года,
+        // "Elsys 2" (P1010, UDS на 11-битной CAN HS) — начиная с 2008-го.
+        // VDS (позиции 4-8) у обоих поколений одинаковый, различает только модельный год.
+        constexpr int p1UdsFirstModelYear{ 2008 };
+
+        if (vin.size() < plainVINLength) {
+            return CarPlatform::Undefined;
+        }
         CarPlatform result = CarPlatform::Undefined;
         const std::string volvoPrefix = "YV1";
         if (vin.find(volvoPrefix) == 0)
@@ -487,7 +537,11 @@ namespace common {
                 result = CarPlatform::P2;
                 break;
             case 'M':
-                result = CarPlatform::P1;
+                // 'M' — семейство P1 (C30/S40/V50). Если год не распознан, остаёмся
+                // на P1 — это поведение до появления разделения на Elsys 1 / Elsys 2.
+                result = (getModelYearFromVIN(vin) >= p1UdsFirstModelYear)
+                    ? CarPlatform::P1_UDS
+                    : CarPlatform::P1;
                 break;
             }
             return result;
@@ -604,6 +658,33 @@ namespace common {
         throw std::runtime_error((std::stringstream() << "Can'f find ECU with id = " << ecuId + ", for platform = " << platformName).str());
     }
 
+    static std::optional<uint32_t> findEcuIdByNamePrefix(const ConfigurationInfo& conf,
+                                                         std::string_view namePrefix,
+                                                         ProtocolType protocol)
+    {
+        for (const auto& busInfo : conf.busInfo) {
+            if (protocol != ProtocolType::NONE && busInfo.protocol != protocol) {
+                continue;
+            }
+            for (const auto& ecuInfo : busInfo.ecuInfo) {
+                if (ecuInfo.name.starts_with(namePrefix)) {
+                    return ecuInfo.ecuId;
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::optional<uint32_t> getCemEcuId(CarPlatform carPlatform, ProtocolType protocol)
+    {
+        return findEcuIdByNamePrefix(getConfigurationInfoByCarPlatform(carPlatform), "CEM", protocol);
+    }
+
+    std::optional<uint32_t> getEcmEcuId(CarPlatform carPlatform, ProtocolType protocol)
+    {
+        return findEcuIdByNamePrefix(getConfigurationInfoByCarPlatform(carPlatform), "ECM", protocol);
+    }
+
     size_t getChannelIndexByEcuId(CarPlatform carPlatform, uint32_t ecuId,
         const std::vector<std::unique_ptr<ICanChannel>>& channels)
     {
@@ -659,7 +740,18 @@ namespace common {
         return EncryptionType::None;
     }
 
-    static ECUInfo processEcuNode(const YAML::Node& node)
+    static ProtocolType getCanProtocol(const std::string& input)
+    {
+        if (toLower(input) == "can")
+            return ProtocolType::CAN;
+        else if (input == "15765-2")
+            return ProtocolType::ISO15765;
+        else if (input == "14230-3")
+            return ProtocolType::ISO14230;
+        return ProtocolType::NONE;
+    }
+
+    static ECUInfo processEcuNode(const YAML::Node& node, ProtocolType parentProtocol)
     {
         ECUInfo ecuInfo;
         ecuInfo.name = node["Name"].as<std::string>();
@@ -667,18 +759,13 @@ namespace common {
         ecuInfo.canId = std::stoi(getNonEmptyHexIntString(node["CANIdentifier"].as<std::string>("")), 0, 16);
         ecuInfo.compressionType = getEcuCompression(node);
         ecuInfo.encryptionType = getEcuEncryption(node);
+        if(const auto protocol = getCanProtocol(node["Protocol"].as<std::string>("")); protocol != ProtocolType::NONE) {
+            ecuInfo.protocol = protocol;
+        }
+        else {
+            ecuInfo.protocol = parentProtocol;
+        }
         return ecuInfo;
-    }
-
-    static ProtocolType getCanProtocol(const std::string& input)
-    {
-        if (input == "CAN")
-            return ProtocolType::CAN;
-        else if (input == "15765-2")
-            return ProtocolType::ISO15765;
-        else if (input == "14230-3")
-            return ProtocolType::ISO14230;
-        return ProtocolType::CAN;
     }
 
     static std::vector<ConfigurationInfo> loadConfigurationImpl(const YAML::Node& node)
@@ -698,11 +785,11 @@ namespace common {
                 if (nodes.IsDefined()) {
                     if (nodes.IsSequence()) {
                         for (const auto& node : bus["Node"]) {
-                            busConf.ecuInfo.emplace_back(processEcuNode(node));
+                            busConf.ecuInfo.emplace_back(processEcuNode(node, busConf.protocol));
                         }
                     }
                     else {
-                        busConf.ecuInfo.emplace_back(processEcuNode(nodes));
+                        busConf.ecuInfo.emplace_back(processEcuNode(nodes, busConf.protocol));
                     }
                 }
                 info.busInfo.emplace_back(std::move(busConf));
@@ -732,18 +819,13 @@ namespace common {
 
     void checkUDSError(uint8_t requestId, const uint8_t* data, size_t dataSize)
     {
-        if(dataSize < 7 || data[4] != 0x7F || data[5] != requestId) {
+        // data — полезная нагрузка UDS-ответа: 4-байтовый CAN-заголовок уже отброшен
+        // транспортом (J2534ChannelAdapter::passthruMsgToCanFrame), поэтому негативный
+        // ответ лежит с нулевого байта: [0]=0x7F, [1]=эхо сервиса, [2]=код ошибки (NRC).
+        if(dataSize < 3 || data[0] != 0x7F || data[1] != requestId) {
             return;
         }
-        throw UDSError(data[6]);
-    }
-
-    void checkD2Error(uint8_t ecuId, const std::vector<uint8_t>& requestId, const uint8_t* data, size_t dataSize)
-    {
-        if(dataSize < 7 || data[4] != 0x7F || data[5] != ecuId) {
-            return;
-        }
-        throw D2Error(data[6]);
+        throw UDSError(data[2]);
     }
 
     CarPlatform parsePlatform(std::string input)
@@ -831,18 +913,6 @@ namespace common {
                 start = end + 1;
             }
         }
-    }
-
-    uint16_t crc16(const uint8_t* data_p, size_t length)
-    {
-        uint16_t crc = 0xFFFF;
-
-        while (length--) {
-            uint8_t x = crc >> 8 ^ *data_p++;
-            x ^= x >> 4;
-            crc = (crc << 8) ^ ((uint16_t)(x << 12)) ^ ((uint16_t)(x << 5)) ^ ((uint16_t)x);
-        }
-        return crc;
     }
 
 } // namespace common

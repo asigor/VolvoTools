@@ -9,7 +9,7 @@ namespace common {
 
 CanFrame makeRawMessage(const CanMessage::DataType& payload)
 {
-  return { D2Message::CanId, payload, true };
+    return { D2Message::CanId, payload, true };
 }
 
 /*static*/ D2Message D2Messages::setCurrentTime(uint8_t hours,
@@ -30,17 +30,6 @@ D2Messages::createReadDataByOffsetMsg(uint8_t ecuId, uint32_t addr,
                             static_cast<uint8_t>(addr), 1, size});
 }
 
-/*static*/ D2Message
-D2Messages::createReadDataByAddrMsg(uint8_t ecuId, uint32_t addr,
-                                    uint8_t size) {
-  const uint8_t byte1 = (addr & 0xFF000000) >> 24;
-  const uint8_t byte2 = (addr & 0xFF0000) >> 16;
-  const uint8_t byte3 = (addr & 0xFF00) >> 8;
-  const uint8_t byte4 = (addr & 0xFF);
-  return D2Message(ecuId, {0xB4, 21, 34}, {byte1, byte2, byte3,
-                                           byte4, size});
-}
-
 /*static*/ D2Message D2Messages::createReadTCMTF80DataByAddr(uint32_t addr,
                                                              size_t dataSize) {
   const uint8_t byte1 = (addr & 0xFF000000) >> 24;
@@ -48,20 +37,18 @@ D2Messages::createReadDataByAddrMsg(uint8_t ecuId, uint32_t addr,
   const uint8_t byte3 = (addr & 0xFF00) >> 8;
   const uint8_t byte4 = (addr & 0xFF);
   return D2Message(static_cast<uint8_t>(common::D2ECUType::TCM),
-                   {0xB4, 0x21, 0x34}, {byte1, byte2, byte3,
-                                        byte4, static_cast<uint8_t>(dataSize)});
+                   {0xB4, 0x21, 0x34, byte1, byte2, byte3,
+                    byte4}, {static_cast<uint8_t>(dataSize)});
 }
 
-///*static*/ D2Message D2Messages::createWriteTCMDataByAddr(uint32_t addr,
-//                                                         uint8_t data) {
-//  const uint8_t byte1 = (addr & 0xFF000000) >> 24;
-//  const uint8_t byte2 = (addr & 0xFF0000) >> 16;
-//  const uint8_t byte3 = (addr & 0xFF00) >> 8;
-//  const uint8_t byte4 = (addr & 0xFF);
-//  return D2Message::makeD2Message(common::ECUType::TCM,
-//                                  {0xB4, 0x40, 0x34, byte1, byte2, byte3,
-//                                   byte4, data});
-//}
+/*static*/ D2Message
+D2Messages::createReadDataByAddrMsg(uint8_t ecuId, uint32_t addr,
+                                    uint8_t size) {
+  const uint8_t byte1 = (addr & 0xFF0000) >> 16;
+  const uint8_t byte2 = (addr & 0xFF00) >> 8;
+  const uint8_t byte3 = (addr & 0xFF);
+  return D2Message(ecuId, {0xBB, byte1, byte2, byte3, size});
+}
 
 /*static*/ D2Message D2Messages::createWriteDataByAddrMsg(uint8_t ecuId,
                                                           uint32_t addr,

@@ -110,6 +110,10 @@ protected:
 
 Специализированный читатель для АКПП TF-80SC. Использует `D2Messages::createReadTCMTF80DataByAddr()`.
 
+Чтение идёт чанками по 132 байта. **requestId = `{0xB4, 0x21, 0x34, addr(4)}` (8 байт)** — запрос двухкадровый, эхо ответа (9 байт) выходит за первый CAN-фрейм и накапливается разбором `D2Request::process` по кадрам серии (см. `d2_protocol_implementation.md`, «Формат ответа»). Полное эхо валидируется и срезается парсером — payload ответа = чистые данные, ручной сдвиг (`additionalShift = 4`) не требуется (удалён).
+
+Защита цикла чтения: пустой ответ → `std::runtime_error` (иначе `j += 0` → бесконечный цикл); вставляемые байты ограничены `min(requestSize, response.size())`.
+
 **Файлы:** `Flasher/flasher/D2ReaderTF80.hpp`, `Flasher/src/D2ReaderTF80.cpp`
 
 ### 2.7. ReaderFactory
@@ -213,8 +217,8 @@ output.write(reader->buffers()[0].data(), ...);
 | 22 | `VolvoFlasher/src/VolvoFlasher.cpp` | `readFlash()` переписан под ReaderFactory |
 | 23 | `Flasher/flasher/D2Reader.hpp` | **Удалён** → заменён на D2ReaderChecksum |
 | 24 | `Flasher/src/D2Reader.cpp` | **Удалён** → заменён на D2ReaderChecksum |
-| 25 | `Flasher/flasher/UDSMemoryReader.hpp` | **Не удалён** — оставлен, но реализация закомментирована (dead code) |
-| 26 | `Flasher/src/UDSMemoryReader.cpp` | **Не удалён** — оставлен, реализация закомментирована (dead code) |
+| 25 | `Flasher/flasher/UDSMemoryReader.hpp` | **Удалён** (позднее) — заменён на `UDSReaderMemory` (MemoryReaderFactory) |
+| 26 | `Flasher/src/UDSMemoryReader.cpp` | **Удалён** (позднее) — заменён на `UDSReaderMemory` (MemoryReaderFactory) |
 
 ## 4. D2FlasherImpl — общий HFSM2
 
@@ -235,6 +239,24 @@ output.write(reader->buffers()[0].data(), ...);
 |---|---|
 | `D2ReaderReadMemoryByAddr` | Чтение через 0xA6 блоками — не реализовано. `D2ReaderChecksum` читает побайтово |
 
+## 5.1. MemoryReaderFactory — чтение памяти без авторизации (добавлено позже)
+
+Параллельная иерархия читателей, не требующих bootloader и авторизации:
+
+```
+MemoryReaderFactory
+  ├── D2ReaderME7Memory   (D2, ECM_ME: createReadDataByAddrMsg {0xBB}, 3-байтный адрес)
+  ├── UDSReaderMemory     (UDS 0x23, блоками 0x100)
+  └── D2ReaderAW55 / D2ReaderTF80 (переиспользуются из ReaderFactory)
+```
+
+**Файлы:** `Flasher/flasher/MemoryReaderFactory.hpp`, `Flasher/src/MemoryReaderFactory.cpp`, `Flasher/flasher/D2ReaderME7Memory.hpp`, `Flasher/flasher/UDSReaderMemory.hpp`.
+
+**`MemoryReaderFactory::getSupportedEcus(platform)`** — список ЭБУ, поддерживающих чтение памяти:
+- `P80`, `P2`, `P2_250`, `P2_UDS` → `{0x7A, 0x6E}`
+
+**`isD2Platform()`/`isUDSPlatform()`** вынесены в общий `Flasher/src/Util.{hpp,cpp}` (используются ReaderFactory и MemoryReaderFactory).
+
 ## 6. Критерии готовности
 
 1. ✓ `ReaderBase` — общий предок с `ReadRanges`, `_buffers`, `FlasherCallbackHolder`
@@ -245,5 +267,7 @@ output.write(reader->buffers()[0].data(), ...);
 6. ✓ `D2ReaderAW55` / `D2ReaderTF80` читают TCM
 7. ✓ `ReaderFactory::create()` диспетчеризует по (platform, ecuId, cmInfo)
 8. ✓ `VolvoFlasher read` использует ReaderFactory
-9. ✓ Старый `D2Reader` удалён; `UDSMemoryReader` оставлен как dead code (закомментирован)
-10. ✓ Сборка: `cmake --build build --config Release` — 0 ошибок
+9. ✓ Старый `D2Reader` удалён; `UDSMemoryReader` удалён (заменён на `UDSReaderMemory`)
+10. ✓ `MemoryReaderFactory::create()` диспетчеризует по (platform, ecuId, cmInfo)
+11. ✓ `MemoryReaderFactory::getSupportedEcus()` возвращает читаемые ЭБУ по платформе
+12. ✓ Сборка: `cmake --build build --config Release` — 0 ошибок

@@ -2,11 +2,10 @@
 
 #include <common/Util.hpp>
 
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#include "../fast-cpp-csv-parser/csv.h"
-#pragma warning(pop)
+#include <csv.h>
 
+#include <filesystem>
+#include <fstream>
 #include <numeric>
 
 namespace logger {
@@ -43,8 +42,10 @@ namespace logger {
 	}
 
 	LogParameters::LogParameters(const std::string& path) {
-		io::CSVReader<11> reader{ path };
-		load(reader);
+        std::filesystem::path fpath = std::filesystem::u8path(path);
+        std::ifstream stream(fpath);
+        io::CSVReader<11> reader{ "log.params", stream };
+        load(reader);
 	}
 
 	LogParameters::LogParameters(std::istream& stream) {

@@ -11,20 +11,36 @@ cmake --preset conan-default
 cmake --build build --config Release
 ```
 
+## LSP / clangd (opencode)
+
+Основная сборка — VS-генератор, поэтому `CMAKE_EXPORT_COMPILE_COMMANDS` там не работает. Для clangd используется отдельное Ninja-дерево `build-lsp/` (см. `.clangd` → `CompilationDatabase: build-lsp`). Пересоздание базы (при изменении структуры CMake или после `conan install`):
+
+```powershell
+# 1. Патченый Conan toolchain (без GENERATOR_PLATFORM/TOOLSET — Ninja их не поддерживает)
+Get-Content build/generators/conan_toolchain.cmake | Where-Object { $_ -notmatch "GENERATOR_(PLATFORM|TOOLSET)" } | Set-Content build/generators/lsp_toolchain.cmake -Encoding UTF8
+
+# 2. Конфигурация Ninja-дерева под vcvars32 (x86, как Conan-профиль)
+Remove-Item -Recurse -Force build-lsp -ErrorAction SilentlyContinue
+cmd /c '"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars32.bat" >nul 2>&1 && cmake -S . -B build-lsp -G Ninja -DCMAKE_TOOLCHAIN_FILE=C:/misc/programming/Flasher/VolvoTools/build/generators/lsp_toolchain.cmake -DCMAKE_MAKE_PROGRAM=C:/Users/artem/AppData/Local/Microsoft/WinGet/Packages/Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe/ninja.exe -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON'
+```
+
+После `conan install` файл `build/generators/lsp_toolchain.cmake` может пропасть — пересоздать по шагу 1.
+
 CI (`windows-2022`) also builds x86 separately: `cmake --preset conan-default -A Win32`.
 
 `prepare_build.bat` is a shortcut for the first three steps using two conan profiles.
 
 Tests build: `cmake --build build --config Release` (built if `-DBUILD_TESTS=ON` during configure — OFF by default).
 
-## Submodules (5)
+## Submodules (4)
 
 Must be init'd after clone. All are read-only dependencies:
 - `Registry/` — Windows Registry C++ wrapper
 - `j2534/` — J2534 API wrapper
-- `argparse/` — argparse C++ header library
 - `libintelhex/` — Intel HEX parser
 - `fast-cpp-csv-parser/` — CSV parser
+
+(argparse is now a Conan dependency `argparse/3.2`, not a submodule)
 
 ## Package map
 
@@ -35,10 +51,10 @@ Must be init'd after clone. All are read-only dependencies:
 | Registry | static lib | `Registry/` | (standalone, Windows-only) |
 | Flasher | static lib | `Flasher/` | Common, j2534 |
 | Logger | static lib | `Logger/` | Common, j2534 |
-| argparse | header-only interface | `argparse/` | (standalone) |
+| argparse | header-only (Conan) | — | (standalone) |
 | intelhex | static lib | `libintelhex/` | (standalone) |
-| **VolvoFlasher** | exe | `VolvoFlasher/src/VolvoFlasher.cpp` | Common, j2534, Flasher, argparse |
-| **VolvoLogger** | exe | `VolvoLogger/src/VolvoLogger.cpp` | Logger, Common, j2534, argparse |
+| **VolvoFlasher** | exe | `VolvoFlasher/src/VolvoFlasher.cpp` | Common, j2534, Flasher, argparse::argparse |
+| **VolvoLogger** | exe | `VolvoLogger/src/VolvoLogger.cpp` | Logger, Common, j2534, argparse::argparse |
 
 ## Architecture
 
@@ -47,7 +63,10 @@ Must be init'd after clone. All are read-only dependencies:
 - **Config data**: `Common/common/data.yaml` (~5k lines) — ECU parameters per platform, loaded at runtime
 - **Crypto keys**: `keys.cpp` at repo root
 - **ProtocolType** (`Common/common/ProtocolType.hpp`): `enum class ProtocolType : uint32_t` — типизированные константы `CAN`, `ISO15765`, `ISO14230`, `ISO9141`, `TP20`. Используется в `BusConfiguration.protocol`, `CanIdProvider`, фабрике каналов вместо `unsigned long` с J2534-константами.
-- **Tech specs** (11 docs in `docs/tech_specs/`): `transport_abstraction.md`, `d2_protocol_implementation.md`, `d2flasher_hfsm.md`, `d2_flasher_reader_common.md`, `ecu_reading.md`, `ISOTP.md`, `reader_flasher_params.md`, `restore_d2_transferdata_batching.md`, `code_logging_extension.md`, `pin_crack.md`, `can_id_provider.md`
+- **Tech specs** (13 docs in `docs/tech_specs/`): `transport_abstraction.md`, `d2_protocol_implementation.md`, `d2flasher_hfsm.md`, `d2_flasher_reader_common.md`, `ecu_reading.md`, `ISOTP.md`, `reader_flasher_params.md`, `restore_d2_transferdata_batching.md`, `code_logging_extension.md`, `pin_crack.md`, `can_id_provider.md`, `d2_request_parser_hardening.md`, `uds_partial_flash.md`
+- **D2Request parser**: `docs/tech_specs/d2_request_parser_hardening.md` — защитный разбор ответов D2 (state machine в `D2Request::process`: валидация seriesId/заголовков с флагом серии `0x10`, лимиты серии, семантика skip/throw, формат ошибки)
+- **D2 framing**: `docs/tech_specs/d2_protocol_implementation.md` — заголовок кадра (`0x80` первый, `0x40` последний, `0x10` флаг серии, младший ниббл = `8+len` либо номер кадра серии), две базы нумерации (`0x08`/`0x10`), реальный обмен чтения VIN (`B9 FB` → CEM `0x50` на CAN HS)
+- **Partial UDS flash**: `docs/tech_specs/uds_partial_flash.md` — `UDSFlasherImpl::calculateBlocksToWrite()`: опрос CRC16 блоков (routine `0x31 01 FF 01`), итеративное замыкание «что стереть / что писать» до неподвижной точки, состояние HFSM `CheckFlash` между `StartBootloader` и `EraseFlash`, пересчёт максимума прогресса
 - **Transport abstraction spec**: `docs/tech_specs/transport_abstraction.md`
 - **New transport types** (`Common/common/`): `CanFrame.hpp` — CAN message struct, `ICanChannel.hpp` — abstract channel interface, `J2534ChannelAdapter.hpp` — J2534 bridge
 - **Channel safety**: J2534 channels opened in one thread crash when used from another — use `J2534ChannelProvider` (see README note)
@@ -55,6 +74,8 @@ Must be init'd after clone. All are read-only dependencies:
 - **CanIdProvider** (`Common/common/CanIdProvider.hpp`): Generates CAN arbitration IDs per protocol — `CanId11bit` (ISO15765, 11-bit, func=`0x7DF`), `CanId29bit` (ISO15765, 29-bit: `0x18DA{ps}F1`/`0x18DB{group}F1`), `CanIdD2` (D2, fixed `0xFFFFE`). Factory `createCanIdProvider()` and helper `createCanIdProviderForEcu()`. Used by `UDSProtocolCommonSteps`, flashers, readers, and `PinCracker`.
 - **Flasher hierarchy**: `FlasherBase` → `D2FlasherBase`/`UDSFlasher`/`KWPFlasher`. D2 flasher uses an HFSM (`Common/common/hfsm2/machine.hpp`, 17K+ lines, v2.6.0) in `D2FlasherImpl` for state orchestration.
 - **Reader hierarchy**: `ReaderBase` → `D2ReaderTF80`/`D2ReaderME7`/`D2ReaderDEM`/`D2ReaderAW55`/`D2ReaderChecksum`/`UDSReader`. Created via `ReaderFactory`.
+- **MemoryReader hierarchy** (чтение памяти без авторизации): `MemoryReaderFactory` → `D2ReaderME7Memory` (D2 через `0xBB`), `UDSReaderMemory` (UDS `0x23` блоками 0x100), `D2ReaderAW55`/`D2ReaderTF80`. `MemoryReaderFactory::getSupportedEcus(platform)` — список читаемых ЭБУ (P80/P2: `{0x7A, 0x6E}`).
+- **Platform helpers**: `isD2Platform()`/`isUDSPlatform()` в `Flasher/src/Util.{hpp,cpp}` (общие для ReaderFactory, MemoryReaderFactory).
 - **Logger architecture**: Dual-threaded — `_loggingThread` reads CAN and pushes `LogRecord` to a deque; `_callbackThread` pops records and dispatches to all registered `LoggerCallback` instances (`FileLogWriter`, `ConsoleLogWriter`).
 - **PIN cracker** (`Flasher/flasher/pin/`): `PinCracker` — universal PIN brute-force algorithm (preAuth per-bus → keepAlive → tryPin loop → postAuth per-bus). `PinCrackerSteps` — strategy interface per protocol bus (`UDSPinCrackerSteps` — UDS 0x27 auth, `D2PinCrackerSteps` — D2 bootloader auth, stub). `PinCrackerStorage` — checked-PIN persistence (`NullPinCrackerStorage`, `InMemoryPinCrackerStorage`). `PinCrackerFactory.hpp` — `createPinCracker()` assembles a PinCracker from already-open `ICanChannel` channels (no J2534 dependency). `createDummyCracker()` — same but with empty channels for testing. `DummyPinCrackerSteps` — log-only steps for unit tests.
 - **keys.cpp**: Standalone reference copy of `VolvoGenerateKey()` and `p3_hash()`. The actual application uses duplicated versions in `VolvoFlasher.cpp`.
@@ -90,7 +111,7 @@ Additional partial test content (not built by default — requires `-DBUILD_TEST
 
 ## Dependencies (Conan)
 
-`boost/1.86.0`, `yaml-cpp/0.6.3`, `easyloggingpp/9.97.1`
+`boost/1.86.0`, `yaml-cpp/0.6.3`, `easyloggingpp/9.97.1`, `argparse/3.2`
 
 ## Misc
 

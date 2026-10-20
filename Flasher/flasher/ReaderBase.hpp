@@ -32,11 +32,13 @@ public:
     size_t getMaximumProgress() const;
 
     const std::vector<std::vector<uint8_t>>& buffers() const { return _buffers; }
+    const ReadRanges& readRanges() const { return _ranges; }
+    uint32_t ecuId() const { return _ecuId; }
 
     void start();
 
 protected:
-    virtual void startImpl(std::vector<std::unique_ptr<common::ICanChannel>>& channels) = 0;
+    virtual void startImpl(const std::vector<std::unique_ptr<common::ICanChannel>>& channels) = 0;
 
     void setCurrentState(FlasherState state);
     void incCurrentProgress(size_t delta);

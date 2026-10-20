@@ -26,16 +26,6 @@
 
 namespace logger {
 
-    template<typename T>
-    std::string dumpArray(const T& vec)
-    {
-        std::stringstream ss;
-        for(const auto& i: vec) {
-            ss << std::hex << int(i) << " ";
-        }
-        return ss.str();
-    }
-
 	class LoggerImpl {
 	public:
         LoggerImpl() {}
@@ -93,6 +83,39 @@ namespace logger {
 		}
 	};
 
+    class D2BBLoggerImpl : public LoggerImpl {
+    public:
+        D2BBLoggerImpl(uint32_t ecuId)
+            : LoggerImpl()
+            , _ecuId(ecuId)
+        {
+        }
+
+    private:
+        virtual void registerParameters(common::ICanChannel&, const LogParameters&) override
+        {
+        }
+
+        virtual std::vector<uint32_t>
+        requestMemory(common::ICanChannel& channel,
+                      const LogParameters& parameters) override
+        {
+            std::vector<uint32_t> result(parameters.parameters().size());
+            for (size_t i = 0; i < parameters.parameters().size(); ++i) {
+                common::D2Request readMemoryRequest{
+                    common::D2Messages::createReadDataByAddrMsg(
+                    static_cast<uint8_t>(_ecuId), parameters.parameters()[i].addr(),
+                        static_cast<uint8_t>(parameters.parameters()[i].size())) };
+
+                const auto readResponse{ readMemoryRequest.process(channel) };
+                result[i] = common::encodeBigEndian(readResponse);
+            }
+            return result;
+        }
+
+        uint32_t _ecuId;
+    };
+
     class AW55D2LoggerImpl : public LoggerImpl {
     public:
         AW55D2LoggerImpl() : LoggerImpl() {}
@@ -109,11 +132,11 @@ namespace logger {
             std::vector<uint32_t> result(parameters.parameters().size());
             for (size_t i = 0; i < parameters.parameters().size(); ++i) {
                 common::D2Request readMemoryRequest{
-                    common::D2Messages::createReadDataByOffsetMsg(
-                    static_cast<uint8_t>(common::D2ECUType::TCM), parameters.parameters()[i].addr(),
-                        static_cast<uint8_t>(parameters.parameters()[i].size())) };
+                                                    common::D2Messages::createReadDataByOffsetMsg(
+                                                        static_cast<uint8_t>(common::D2ECUType::TCM), parameters.parameters()[i].addr(),
+                                                        static_cast<uint8_t>(parameters.parameters()[i].size())) };
 
-                auto readResponse{ readMemoryRequest.process(channel) };
+                const auto readResponse{ readMemoryRequest.process(channel) };
                 result[i] = common::encodeBigEndian(readResponse);
             }
             return result;
@@ -140,8 +163,7 @@ namespace logger {
                         parameters.parameters()[i].addr(),
                         parameters.parameters()[i].size()) };
 
-                auto readResponse{ readMemoryRequest.process(channel, 200, 3) };
-                readResponse.erase(readResponse.begin(), readResponse.begin() + 4);
+                const auto readResponse{ readMemoryRequest.process(channel, 200, 3) };
                 result[i] = common::encodeLittleEndian(readResponse);
             }
             return result;
@@ -153,8 +175,9 @@ namespace logger {
         UDSLoggerImpl(uint32_t canId)
             : LoggerImpl()
             , _canId{ canId }
-			, _didBase(0xF200)
-            , _didMaxDataSize{ 7 }
+            , _didBase(0xF300)
+            , _didMaxDataSize{ 120 }
+            , _didMaxCount{ 30 }
 		{
 		}
 
@@ -167,12 +190,12 @@ namespace logger {
         size_t getFittingDidIndex(const LogParameter& logParameter) {
             uint16_t maxId = _didBase - 1;
             for(size_t i = 0; i < _didRequests.size(); ++i) {
-                if(_didRequests[i].freeSize >= logParameter.size()) {
+                if(_didRequests[i].freeSize >= logParameter.size() && _didRequests[i].freeCount > 0) {
                     return i;
                 }
                 maxId = std::max(maxId, _didRequests[i].didId);
             }
-            _didRequests.emplace_back(DidInfo(maxId + 1, _didMaxDataSize));
+            _didRequests.emplace_back(DidInfo(maxId + 1, _didMaxDataSize, _didMaxCount));
             return _didRequests.size() - 1;
         }
 
@@ -190,6 +213,7 @@ namespace logger {
                 size_t didIndex = getFittingDidIndex(param);
                 _didRequests[didIndex].paramIndexes.push_back(i);
                 _didRequests[didIndex].freeSize -= param.size();
+                --_didRequests[didIndex].freeCount;
             }
             for (const auto& didRequest: _didRequests) {
                 const auto did = didRequest.didId;
@@ -227,7 +251,7 @@ namespace logger {
                 common::UDSRequest requestDid{_canId, { 0x22, static_cast<uint8_t>(did >> 8), static_cast<uint8_t>(did) }};
                 const auto data{requestDid.process(channel)};
                 size_t paramIndex = 0;
-                for(size_t i = 7; i < data.size(); ++i) {
+                for(size_t i = 3; i < data.size(); ++i) {
                     const size_t initialParamIndex{didRequest.paramIndexes[paramIndex]};
                     const auto& param = parameters.parameters()[initialParamIndex];
                     value += data[i] << ((param.size() - paramOffset - 1) * 8);
@@ -247,9 +271,10 @@ namespace logger {
 		}
 
         struct DidInfo {
-            DidInfo(uint16_t didId, size_t freeSize)
+            DidInfo(uint16_t didId, size_t freeSize, size_t freeCount)
                 : didId{ didId }
                 , freeSize{ freeSize }
+                , freeCount{ freeCount }
             {
             }
             DidInfo(const DidInfo&) = default;
@@ -258,11 +283,13 @@ namespace logger {
             uint16_t didId;
             std::vector<size_t> paramIndexes;
             size_t freeSize;
+            size_t freeCount;
         };
 
         const uint32_t _canId;
 		const uint16_t _didBase;
         const size_t _didMaxDataSize;
+        const size_t _didMaxCount;
         std::vector<DidInfo> _didRequests;
 	};
 
@@ -308,7 +335,7 @@ namespace logger {
                     }
                     size_t paramOffset = 0;
                     uint32_t value = 0;
-                    for(size_t j = 5; j < data.size(); ++j) {
+                    for(size_t j = 3; j < data.size(); ++j) {
                         value += data[j] << (paramOffset * 8);
                         ++paramOffset;
                         if (paramOffset >= param.size()) {
@@ -321,6 +348,92 @@ namespace logger {
                     LOG_MODULE(ERROR) << ex.what();
                 }
                 catch(...) {
+                }
+            }
+            return result;
+        }
+
+        const uint32_t _canId;
+    };
+
+    class UDSHavalTCULoggerImpl : public LoggerImpl {
+    public:
+        UDSHavalTCULoggerImpl(uint32_t canId)
+            : LoggerImpl()
+            , _canId{ 0x635 }
+        {
+        }
+
+    private:
+
+        static std::string formatCanFrame(const common::CanFrame& frame)
+        {
+            std::stringstream ss;
+            ss << "id: 0x" << std::hex << frame.id << ", data: " << common::dumpArray(frame.data);
+            return ss.str();
+        }
+
+        std::vector<uint8_t> processRequest(
+            common::ICanChannel& channel, uint32_t canId, const std::vector<uint8_t>& data, const std::vector<uint8_t>& toCheck = {}) const
+        {
+            LOG_MODULE(INFO) << "send, id: 0x" << std::hex << canId << ", data: " << common::dumpArray(data);
+            channel.clearRx();
+            common::CanFrame frame(canId, data, false);
+            frame.data.resize(8);
+            channel.send(frame);
+            common::CanFrame received;
+            if(channel.receive(received, 1000)) {
+                const size_t checkSize = std::min(toCheck.size(), received.data.size());
+                for(size_t i = 0; i < checkSize; ++i) {
+                    if(received.data[i] != toCheck[i]) {
+                        LOG_MODULE(WARNING) << "wrong answer: " << formatCanFrame(frame)
+                                            << ", expected: " << common::dumpArray(toCheck);
+                        break;
+                    }
+                }
+                LOG_MODULE(INFO) << "received: " << formatCanFrame(received);
+                return std::vector<uint8_t>(received.data.begin() + checkSize, received.data.end());
+            }
+            else {
+                LOG_MODULE(WARNING) << "no answer";
+                throw std::runtime_error("No answer received");
+            }
+        }
+
+        virtual void
+        registerParameters(common::ICanChannel& channel,
+                           const LogParameters& parameters) override
+        {
+            try {
+                processRequest(channel, 0x7E1, { 0x2, 0x10, 0x3 }, {});
+            }
+            catch(...)
+            {
+            }
+            processRequest(channel, _canId, { 0xFF }, {});
+        }
+
+        virtual std::vector<uint32_t>
+        requestMemory(common::ICanChannel& channel,
+                      const LogParameters& parameters) override
+        {
+            std::vector<uint32_t> result;
+            for (size_t i = 0; i < parameters.parameters().size(); ++i) {
+                try {
+                    const auto& param = parameters.parameters()[i];
+                    const auto formattedAddr = common::toVector(param.addr());
+                    const auto data = processRequest(
+                        channel, _canId, { 0xF4, static_cast<uint8_t>(param.size()), 0x00, 0x00,
+                                  formattedAddr[3], formattedAddr[2], formattedAddr[1], formattedAddr[0] }, { 0xFF });
+
+                    const uint32_t value = common::encodeBigEndian(data);
+                    result.push_back(value);
+                }
+                catch(const std::exception& ex) {
+                    LOG_MODULE(ERROR) << ex.what();
+                }
+                catch(...) {
+                    LOG_MODULE(ERROR) << "Unknown error";
                 }
             }
             return result;
@@ -347,6 +460,11 @@ namespace logger {
                 return std::make_unique<TF80D2LoggerImpl>();
 			}
         }
+        if (cmId == to_underlying(common::D2ECUType::DEM)
+            && (carPlatform == CarPlatform::P80 || carPlatform == CarPlatform::P2
+                || carPlatform == CarPlatform::P2_250)) {
+            return std::make_unique<D2BBLoggerImpl>(cmId);
+        }
         const common::ECUInfo ecuInfo{ std::get<1>(common::getEcuInfoByEcuId(carPlatform, cmId)) };
         if (carPlatform == CarPlatform::P3 || carPlatform == CarPlatform::Ford_UDS || carPlatform == CarPlatform::VAG) {
             return std::make_unique<UDSLoggerImpl>(ecuInfo.canId);
@@ -363,11 +481,12 @@ namespace logger {
 		{
 		case common::CarPlatform::P1:
 		case common::CarPlatform::P2:
+		case common::CarPlatform::P2_250:
 		case common::CarPlatform::P80:
 			return LoggerType::LT_D2;
 		case common::CarPlatform::P3:
-        case common::CarPlatform::Haval_UDS:
-        case common::CarPlatform::Ford_UDS:
+		case common::CarPlatform::Haval_UDS:
+		case common::CarPlatform::Ford_UDS:
 			return LoggerType::LT_UDS;
 		default:
 			throw std::runtime_error("Unsupported car platform");
@@ -400,11 +519,13 @@ namespace logger {
 			_callbacks.end());
 	}
 
-	void Logger::start(unsigned long baudrate, const LogParameters& parameters) {
+	void Logger::start(const LogParameters& parameters) {
 		std::unique_lock<std::mutex> lock{ _mutex };
 		if (!_stopped) {
 			throw std::runtime_error("Logging already started");
 		}
+
+		stopImpl();
 
 		_parameters = parameters;
 
@@ -422,16 +543,23 @@ namespace logger {
 			std::unique_lock<std::mutex> lock{ _mutex };
 			_stopped = true;
 		}
-		if (_loggingThread.joinable())
+		stopImpl();
+	}
+
+	void Logger::stopImpl()
+	{
+		if (_loggingThread.joinable()) {
 			_loggingThread.join();
+		}
 
 		{
 			std::unique_lock<std::mutex> lock{ _callbackMutex };
 			_callbackCond.notify_all();
 		}
 
-		if (_callbackThread.joinable())
+		if (_callbackThread.joinable()) {
 			_callbackThread.join();
+		}
 	}
 
 	void Logger::registerParameters() {
@@ -466,6 +594,10 @@ namespace logger {
                     now - startTimepoint),
                     std::move(logRecord)));
                 errorCount = 0;
+            }
+            catch(const std::exception& ex) {
+                LOG_MODULE(ERROR) << ex.what();
+                ++errorCount;
             }
             catch(...) {
                 ++errorCount;

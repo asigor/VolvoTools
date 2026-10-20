@@ -10,7 +10,7 @@ namespace flasher {
 class UDSPinCrackerSteps final : public PinCrackerSteps {
 public:
     UDSPinCrackerSteps(std::unique_ptr<common::CanIdProvider> canIdProvider,
-                       bool needProgSession = false)
+                       bool needProgSession)
         : _canIdProvider{ std::move(canIdProvider) }
         , _needProgSession{ needProgSession }
     {}
@@ -23,7 +23,7 @@ public:
 
     std::vector<unsigned long> startKeepAlive(common::ICanChannel& channel) override;
 
-    void stopKeepAlive(const std::vector<unsigned long>& ids) override;
+    void stopKeepAlive(common::ICanChannel& channel, const std::vector<unsigned long>& ids) override;
 
     std::chrono::milliseconds getRetryDelay() const override { return std::chrono::milliseconds{5000}; }
 
