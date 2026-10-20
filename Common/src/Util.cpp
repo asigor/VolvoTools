@@ -221,10 +221,23 @@ namespace common {
         channel.setConfig(config);
     }
 
-    static void setupChannelPins(j2534::J2534Channel& channel)
-{protocolId != ISO14230_PS &&
+    
+static void setupChannelPins(j2534::J2534Channel& channel)
+{
+    const auto protocolId = channel.getProtocolId();
+
+    if (protocolId != ISO14230_PS &&
         protocolId != ISO15765_PS &&
         protocolId != CAN_PS) {
+        return;
+    }
+
+    std::vector<SCONFIG> config(1);
+    config[0].Parameter = J1962_PINS;
+    config[0].Value = 0x030B; // OBD pins 3 and 11
+    channel.setConfig(config);
+}
+
             std::vector<SCONFIG> config(1);
             config[0].Parameter = J1962_PINS;
             config[0].Value = 0x030B;
