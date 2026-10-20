@@ -58,6 +58,24 @@ jobs:
             Rename-Item -LiteralPath $_.FullName -NewName "${name}_x86_${date}_${shortCommit}${ext}"
           }
 
+      - name: Assemble x86 PowerShell package
+        shell: pwsh
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP "VolvoTools-x86"
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Get-ChildItem -Path build -Filter "*.exe" -Recurse -File | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $package
+          }
+          Copy-Item -Path distribution\* -Destination $package -Recurse -Force
+          Compress-Archive -Path "$package\*" -DestinationPath "VolvoTools_Package_x86.zip" -Force
+
+      - name: Upload x86 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: VolvoTools_Package_x86
+          path: VolvoTools_Package_x86.zip
+          if-no-files-found: error
+
       - name: Upload x86 artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -107,6 +125,24 @@ jobs:
             Rename-Item -LiteralPath $_.FullName -NewName "${name}_x64_${date}_${shortCommit}${ext}"
           }
 
+      - name: Assemble x64 PowerShell package
+        shell: pwsh
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP "VolvoTools-x64"
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Get-ChildItem -Path build -Filter "*.exe" -Recurse -File | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $package
+          }
+          Copy-Item -Path distribution\* -Destination $package -Recurse -Force
+          Compress-Archive -Path "$package\*" -DestinationPath "VolvoTools_Package_x64.zip" -Force
+
+      - name: Upload x64 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: VolvoTools_Package_x64
+          path: VolvoTools_Package_x64.zip
+          if-no-files-found: error
+
       - name: Upload x64 artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -142,7 +178,21 @@ jobs:
           }
           $artifacts | Select-Object FullName
 
+      - name: Download x64 package
+        uses: actions/download-artifact@v4
+        with:
+          name: VolvoTools_Package_x64
+          path: artifacts/packages/x64
+
+      - name: Download x86 package
+        uses: actions/download-artifact@v4
+        with:
+          name: VolvoTools_Package_x86
+          path: artifacts/packages/x86
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*.exe
+          files: |
+            artifacts/**/*.exe
+            artifacts/packages/**/*.zip
