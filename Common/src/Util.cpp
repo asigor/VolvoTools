@@ -222,8 +222,9 @@ namespace common {
     }
 
     static void setupChannelPins(j2534::J2534Channel& channel)
-    {
-        if (channel.getProtocolId() == ISO14230_PS || channel.getProtocolId() == ISO15765_PS) {
+{protocolId != ISO14230_PS &&
+        protocolId != ISO15765_PS &&
+        protocolId != CAN_PS) {
             std::vector<SCONFIG> config(1);
             config[0].Parameter = J1962_PINS;
             config[0].Value = 0x030B;
