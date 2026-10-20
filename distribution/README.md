@@ -19,6 +19,9 @@ These scripts are intended to sit beside the executables downloaded from the Git
 
 # Start logger; supply the variables file used by VolvoLogger when available
 .\Start-Logger-P1.ps1 -Device "sm2 pro" -Variables ".\data\variables.json" -Output ".\logs\p1.csv"
+
+# Flashing is explicit: the input firmware file is mandatory
+.\Start-Flash-P1.ps1 -InputFile ".\data\firmware.bin" -Device "sm2 pro" -Platform P1
 \`\`\`
 
 ## Defaults
