@@ -234,15 +234,10 @@ static void setupChannelPins(j2534::J2534Channel& channel)
 
     std::vector<SCONFIG> config(1);
     config[0].Parameter = J1962_PINS;
-    config[0].Value = 0x030B; // OBD pins 3 and 11
+    config[0].Value = 0x030B;
     channel.setConfig(config);
 }
 
-            std::vector<SCONFIG> config(1);
-            config[0].Parameter = J1962_PINS;
-            config[0].Value = 0x030B;
-            channel.setConfig(config);
-        }
 
     std::unique_ptr<j2534::J2534Channel>
         openChannel(j2534::J2534& j2534, unsigned long ProtocolID, unsigned long Flags,
