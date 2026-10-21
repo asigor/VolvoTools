@@ -1,0 +1,48 @@
+@startuml RxStateMachine
+skinparam backgroundColor #FEFEFE
+skinparam state {
+  FontSize 12
+  FontName Consolas
+  BackgroundColor #E8F5E9
+  BorderColor #2E7D32
+}
+
+title Automat stanów odbiornika ISO-TP (HFSM2)
+
+state RxIdle : Oczekiwanie na pierwszą ramkę
+state ReceiveSF : Odebrano ramkę pojedynczą
+state ReceiveFF : Odebrano pierwszą ramkę, wysyłanie FC
+state SendFC : Ponowne wysyłanie Flow Control
+state ReceiveCF : Oczekiwanie na kolejne ramki
+state RxCompleted : Odebrano kompletną wiadomość
+state RxError : Stan błędu
+
+[*] --> RxIdle : Wejście początkowe
+
+RxIdle --> ReceiveSF : RxFrame(SF) — natychmiast zapisz dane
+RxIdle --> ReceiveFF : RxFrame(FF) — rozpocznij odbiór
+RxIdle --> RxError : RxFrame(inna)
+
+ReceiveSF --> RxCompleted : Wywołaj onReceived, potem automatycznie
+
+ReceiveFF --> ReceiveCF : Wyślij FC(CTS, BS, STmin), uruchom timer N_Ar
+ReceiveFF --> RxError : BufferOverflow (wiadomość za duża)
+
+ReceiveCF --> RxCompleted : Odebrano wszystkie CF (len >= expectedLength), wywołaj onReceived
+ReceiveCF --> ReceiveCF : Oczekuj kolejnych CF (ponowne wejście uruchamia timer N_Cr)
+ReceiveCF --> RxError : Nieprawidłowy numer sekwencji
+ReceiveCF --> RxError : Timeout(N_Cr)
+ReceiveCF --> RxError : RxFrame(inna)
+
+SendFC --> ReceiveCF : Ponownie wyślij FC i wróć do oczekiwania na CF
+
+RxCompleted --> RxIdle : Automatycznie
+
+RxIdle --> RxIdle : Reset
+ReceiveFF --> RxIdle : Reset
+ReceiveCF --> RxIdle : Reset
+RxError --> RxIdle : Reset
+
+RxError --> RxError : Dowolne inne zdarzenie
+
+@enduml
