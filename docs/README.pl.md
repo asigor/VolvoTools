@@ -16,8 +16,10 @@ Ten katalog zawiera polskie wersje wybranych dokumentów projektu. Oryginalne pl
 ## Architektura flashera i odczytu ECU
 
 - [Wspólna implementacja flashera i czytników D2](tech_specs/d2_flasher_reader_common.pl.md)
+- [Przeniesienie D2FlasherBase na automat stanów hFSM2](tech_specs/d2flasher_hfsm.pl.md)
+- [Parametry czytników i flasherów](tech_specs/reader_flasher_params.pl.md)
 - [Odczyt oprogramowania z ECU](tech_specs/ecu_reading.pl.md)
 
 ## Zakres i uwagi
 
-To jest pierwsza partia tłumaczeń, a nie kompletna polska wersja całego repozytorium. W repozytorium znajduje się więcej specyfikacji technicznych, a także plik PDF `PrimaryBoot_169.pdf`. Plików binarnych, kodu źródłowego, nazw API, identyfikatorów protokołów ani danych technicznych nie należy tłumaczyć automatycznie jak zwykłej prozy. Tłumaczenia dokumentacji zachowują nazwy symboli i przykłady kodu, aby pozostały użyteczne dla programistów.
+To jest rozwijany zestaw tłumaczeń dokumentacji, a nie kompletna polska wersja całego repozytorium. W repozytorium znajduje się więcej specyfikacji technicznych, a także plik PDF `PrimaryBoot_169.pdf`. Plików binarnych, kodu źródłowego, nazw API, identyfikatorów protokołów ani danych technicznych nie należy tłumaczyć automatycznie jak zwykłej prozy. Tłumaczenia dokumentacji zachowują nazwy symboli i przykłady kodu, aby pozostały użyteczne dla programistów.
