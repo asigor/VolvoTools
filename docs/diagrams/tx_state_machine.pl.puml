@@ -1,0 +1,51 @@
+@startuml TxStateMachine
+skinparam backgroundColor #FEFEFE
+skinparam state {
+  FontSize 12
+  FontName Consolas
+  BackgroundColor #EEF2FF
+  BorderColor #445566
+}
+
+title Automat stanów nadajnika ISO-TP (HFSM2)
+
+state Idle : Oczekiwanie na żądanie wysłania
+state SendSingleFrame : Wysyłanie ramki SF (dane <= 7 bajtów)
+state SendFirstFrame : Wysyłanie ramki FF (dane > 7 bajtów)
+state WaitFlowControl : Oczekiwanie na FC po FF lub bloku
+state SendConsecutiveFrame : Wysyłanie kolejnych ramek CF
+state TxCompleted : Wysyłanie zakończone
+state TxError : Stan błędu
+
+[*] --> Idle : Wejście początkowe
+
+Idle --> SendSingleFrame : SendRequest && size <= 7
+Idle --> SendFirstFrame : SendRequest && size > 7
+
+SendSingleFrame --> TxCompleted : Ramka wysłana
+
+SendFirstFrame --> WaitFlowControl : Wysłano FF
+
+WaitFlowControl --> SendConsecutiveFrame : RxFrame(FC, CTS)
+WaitFlowControl --> WaitFlowControl : RxFrame(FC, WAIT) — uruchom timer ponownie
+WaitFlowControl --> TxError : RxFrame(FC, OVERFLOW)
+WaitFlowControl --> TxError : Timeout(N_Bs)
+
+SendConsecutiveFrame --> SendConsecutiveFrame : TxConfirmation OK && more data && (no block limit)
+SendConsecutiveFrame --> WaitFlowControl : TxConfirmation OK && blockSize > 0 && blockCounter >= blockSize
+SendConsecutiveFrame --> TxCompleted : TxConfirmation OK && all data sent
+SendConsecutiveFrame --> TxError : TxConfirmation FAIL
+SendConsecutiveFrame --> TxError : Timeout(N_Cs)
+
+SendConsecutiveFrame --> WaitFlowControl : ReadyToSend after STmin (automatyczne przejście)
+
+TxCompleted --> Idle : Automatycznie
+
+Idle --> Idle : Reset
+WaitFlowControl --> Idle : Reset
+SendConsecutiveFrame --> Idle : Reset
+TxError --> Idle : Reset
+
+TxError --> TxError : Dowolne inne zdarzenie
+
+@enduml
