@@ -12,6 +12,7 @@ Ten katalog zawiera polskie wersje wybranych dokumentów projektu. Oryginalne pl
 - [Automat stanów odbiornika ISO-TP](diagrams/rx_state_machine.pl.md)
 - [Automat stanów nadajnika ISO-TP](diagrams/tx_state_machine.pl.md)
 - [Specyfikacja ISO-TP](tech_specs/ISOTP.pl.md)
+- [Rozszerzenie logowania aplikacji](tech_specs/code_logging_extension.pl.md)
 
 ## Architektura flashera i odczytu ECU
 
